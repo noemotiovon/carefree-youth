@@ -34,6 +34,12 @@
    const float theta_scale = powf(freq_base, -2.0f/n_dims);
    ```
 
+   $$
+   {\text{theta\_scale}} = \text{freq\_base}^{-\frac{2.0}{{\text{n\_dims}}}}
+   $$
+
+   
+
 2. 计算一个**修正维度的范围**：corr_dims，这是一个只有两个参数的数组，表明旋转位置嵌入对哪些维度（或者特征分量）进行了调整。
 
    ```c
@@ -53,6 +59,12 @@
        dims[1] = MIN(n_dims - 1, end);
    }
    ```
+
+   $$
+   \text{corr\_dim}(\text{n\_dims}, {\text{n\_ctx\_orig}}, {\text{n\_rot}}, \text{base}) = \frac{{\text{n\_dims}} \cdot \ln\left(\frac{{\text{n\_ctx\_orig}}}{{\text{n\_rot}} \cdot 2 \pi}\right)}{2 \cdot \ln(\text{base})}
+   $$
+
+   
 
 3. 计算是否是neox计算模式：
 
@@ -88,11 +100,28 @@
          const float ff = freq_factors ? freq_factors[i0/2] : 1.0f;
          ```
 
-         计算实际的theat：
+         $$
+         f_f =
+         \begin{cases}
+         \text{freq\_factors}\left[\frac{i_0}{2}\right], & \text{if } \text{freq\_factors} \neq \text{nullptr} \\
+         1.0, & \text{if } \text{freq\_factors} = \text{nullptr}
+         \end{cases}
+         $$
+
+         计算每次角度缩放后的theat：
+         $$
+         \text{theta\_base} = \text{theta\_base} \cdot \text{scale}^
+         \left\lfloor \frac{i_0}{2} \right\rfloor
+         $$
+         计算频率调整因子后的的theat：
 
          ```c
          const float theat = theat_base / ff;
          ```
+
+         $$
+         \text{theta} = \frac{{\text{theat\_base}}}{ff}
+         $$
 
          开始计算RoPE矩阵：
 
@@ -101,7 +130,7 @@
              float theta_extrap, float freq_scale, float corr_dims[2], int64_t i0, float ext_factor, float mscale,
              float * cos_theta, float * sin_theta) {
              // Get n-d rotational scaling corrected for extrapolation
-             float theta_interp = freq_scale * theta_extrap;
+             float theta_interp = freq_scale * theta_extrap; //theta_extrap就是上一部计算的theat
              float theta = theta_interp;
              if (ext_factor != 0.0f) {
                  float ramp_mix = rope_yarn_ramp(corr_dims[0], corr_dims[1], i0) * ext_factor;
@@ -120,16 +149,46 @@
          }
          ```
 
+         $$
+         {\text{theta\_interp}} = \text{freq\_scale} \cdot {\text{threat\_extrap}}
+         $$
+
+         * 如果ext_factor!= 0：
+
+         $$
+         \text{ramp\_mix} = \left(1 - \min\left(1, \max\left(0, \frac{\frac{i_0}{2} - \text{corr\_dims}[0]}{\max(0.001, \text{corr\_dims}[1] - \text{corr\_dims}[0])}\right)\right)\right) \cdot \text{ext\_factor}
+         $$
+
+         $$
+         \text{theta} = {\text{theta\_interp}} \cdot (1 - \text{ramp\_mix}) + {\text{theta\_extrap}} \cdot \text{ramp\_mix}
+         $$
+
+         $$
+         \text{mscale} = \text{mscale} \cdot \left(1 + 0.1 \cdot \ln\left(\frac{1}{\text{freq\_scale}}\right)\right)
+         $$
+
+         * 如果ext_factor== 0：
+
+         $$
+         \text{theta} = {\text{theta\_interp}} 
+         $$
+
+         $$
+         \text{mscale} = \text{mscale}
+         $$
+
+         $$
+         \text{cos\_theta} = \cos(\text{theta}) \cdot \text{mscale}
+         $$
+
+         $$
+         \text{sin\_theta} = \sin(\text{theta}) \cdot \text{mscale}
+         $$
+
          处理前向或反向：
 
          ```c
          cache[i0 + 1] *= sin_sign;
-         ```
-
-         计算theat，这里做这一步的原因是计算时，第n个位置的角度缩放因子是theat_scale的n次方：
-
-         ```c
-         theta *= theta_scale;
          ```
 
          --- 退出`i0 in ne0`的循环
@@ -153,6 +212,14 @@
          dst_data[1] = GGML_FP32_TO_FP16(x0*sin_theta + x1*cos_theta);
          ```
 
+         $$
+         \text{dst[0]} = x_0 \cdot \text{cos\_theat} - x_1 \cdot \text{sin\_theat}
+         $$
+
+         $$
+         \text{dst[1]} = x_0 \cdot \text{cos\_theat} + x_1 \cdot \text{sin\_theat}
+         $$
+
          --- 退出`i0 in ne0`的循环
 
          是neox模式：
@@ -167,7 +234,18 @@
          
          const ggml_fp16_t * const src = (ggml_fp16_t *)((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01 + ic*nb00);
          ggml_fp16_t * dst_data  = (ggml_fp16_t *)((char *)  dst->data + i3*nb3  + i2*nb2  + i1*nb1  + ic*nb0);
+         
+         dst_data[0]        = GGML_FP32_TO_FP16(x0*cos_theta - x1*sin_theta);
+         dst_data[n_dims/2] = GGML_FP32_TO_FP16(x0*sin_theta + x1*cos_theta);
          ```
+
+         $$
+         \text{dst[0]} = x_0 \cdot \text{cos\_theat} - x_1 \cdot \text{sin\_theat}
+         $$
+
+         $$
+         \text{dst[}\frac{n\_dims}{2}\text{]} = x_0 \cdot \text{cos\_theat} + x_1 \cdot \text{sin\_theat}
+         $$
 
          --- 退出`i0 in ne0`的循环
 
