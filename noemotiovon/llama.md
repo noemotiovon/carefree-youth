@@ -230,7 +230,7 @@ cmake .. -DCMAKE_BUILD_TYPE=debug -DLLAMA_CANN=on && make -j32
 ./build/bin/test-backend-ops test -b CANN0 -o CONT
 
 # 单算子性能测试，性能测试不会测试精度
-./bin/test-backend-ops perf -b CANN0 -o {OP_NAME}
+./build/bin/test-backend-ops perf -b CANN0 -o {OP_NAME}
 
 # 模型推理
 ./bin/llama-cli -m /home/wangshuai/models/hermes_gguf/Hermes-2-Pro-Llama-3-8B-F16.gguf -p "Building a website can be done in 10 simple steps:" -ngl 32 -sm none -mg 0 -t 0
@@ -304,7 +304,7 @@ NPU运算步骤
 1. 构造acl_arange_tensor，维度[ne0 / 2, 1, 1, 1]，值[[[[1, 2, 3, ..., ne0/2]]]]
 2. 构造acl_theta_scale_tensor，维度[ne0 / 2, 1, 1, 1]，值[[[[theta_scale, theta_scale^2, ..., theta_scale^ne0/2]]]]
 3. 构造all_freq_factors_tensor，维度[ne0 / 2, 1, 1, 1]，值srr2->data
-4. 构造acl_position_tensor，维度[1, ne1, 1, 1], 值src1->data
+4. 构造acl_position_tensor，维度[1, ne1, 1, 1]，值src1->data
 
 
 
