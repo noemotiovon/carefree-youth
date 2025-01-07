@@ -1,5 +1,5 @@
-参考文档：
-
+> 参考文档：
+>
 > [Ray: A Distributed Framework for Emerging AI Applications](./PDF/Ray-Paper.pdf)
 >
 > [Ray - doc](https://docs.ray.io/en/latest/)
@@ -28,7 +28,7 @@ pip install -U "ray[default,train]"
 
 
 
-## 2 入门指南
+## 2 用例
 
 
 
