@@ -1,8 +1,10 @@
 >参考文档：
 >
->[Ray Compiled Graphs: Optimized AI Workloads with Native GPU Communication](https://www.anyscale.com/blog/announcing-compiled-graphs)
+>* [Ray Compiled Graphs: Optimized AI Workloads with Native GPU Communication](https://www.anyscale.com/blog/announcing-compiled-graphs)
 >
+>科普：
 >
+>* DAG：Directed Acyclic Graph 有向无环图。
 
 
 
