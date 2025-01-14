@@ -1,4 +1,4 @@
-### 1 RoPE算子数学逻辑
+## 1 RoPE算子数学逻辑
 
 > RoPE旋转位置编码最经典的文章，这里就不重复造轮子了。
 
@@ -6,7 +6,7 @@
 
 
 
-### 2 Llama.cpp中CPU实现逻辑
+## 2 Llama.cpp中CPU实现逻辑
 
 在llama.cpp中，ggml_tensor的维度和NPU中的tensor是“反的”，例如NPU的[BSND]对应ggml中为[DNSB]
 
@@ -132,7 +132,7 @@
              float theta_extrap, float freq_scale, float corr_dims[2], int64_t i0, float ext_factor, float mscale,
              float * cos_theta, float * sin_theta) {
              // Get n-d rotational scaling corrected for extrapolation
-             float theta_interp = freq_scale * theta_extrap; //theta_extrap就是上一部计算的theat
+             float theta_interp = freq_scale * theta_extrap; //theta_extrap就是上一步计算的theat
              float theta = theta_interp;
              if (ext_factor != 0.0f) {
                  float ramp_mix = rope_yarn_ramp(corr_dims[0], corr_dims[1], i0) * ext_factor;
@@ -271,181 +271,177 @@
 
 
 
-### 3 源码参考
+## 3 源码参考
 
 ```c
-// Apparently solving `n_rot = 2pi * x * base^((2 * max_pos_emb) / n_dims)` for x, we get
-// `corr_dim(n_rot) = n_dims * log(max_pos_emb / (n_rot * 2pi)) / (2 * log(base))`
+// 计算频率修正维度的工具函数，用于实现YaRN算法中的旋转嵌入调整。
+// 根据公式 `corr_dim(n_rot) = n_dims * log(max_pos_emb / (n_rot * 2π)) / (2 * log(base))`。
 static float ggml_rope_yarn_corr_dim(int n_dims, int n_ctx_orig, float n_rot, float base) {
     return n_dims * logf(n_ctx_orig / (n_rot * 2 * (float)M_PI)) / (2 * logf(base));
 }
 
+// 计算频率修正的起始和结束维度范围。
+// 参数：
+// - n_dims: 总的维度数。
+// - n_ctx_orig: 原始上下文长度。
+// - freq_base: 基础频率。
+// - beta_fast, beta_slow: 修正的快速和缓慢频率参数。
+// - dims: 存储结果的数组，表示修正的维度范围。
 void ggml_rope_yarn_corr_dims(
     int n_dims, int n_ctx_orig, float freq_base, float beta_fast, float beta_slow, float dims[2]
 ) {
-    // start and end correction dims
     float start = floorf(ggml_rope_yarn_corr_dim(n_dims, n_ctx_orig, beta_fast, freq_base));
-    float end   =  ceilf(ggml_rope_yarn_corr_dim(n_dims, n_ctx_orig, beta_slow, freq_base));
+    float end   = ceilf(ggml_rope_yarn_corr_dim(n_dims, n_ctx_orig, beta_slow, freq_base));
     dims[0] = MAX(0, start);
     dims[1] = MIN(n_dims - 1, end);
 }
 
+// 根据修正维度范围计算一个线性分布的权重，用于频率调整。
+// 参数：
+// - low: 修正范围的下限。
+// - high: 修正范围的上限。
+// - i0: 当前的维度索引。
+// 返回值：范围 [0, 1] 内的权重值。
 static float rope_yarn_ramp(const float low, const float high, const int i0) {
     const float y = (i0 / 2 - low) / MAX(0.001f, high - low);
     return 1 - MIN(1, MAX(0, y));
 }
 
-// YaRN algorithm based on LlamaYaRNScaledRotaryEmbedding.py from https://github.com/jquesnelle/yarn
-// MIT licensed. Copyright (c) 2023 Jeffrey Quesnelle and Bowen Peng.
+// 实现YaRN算法的核心逻辑，进行旋转嵌入的频率和幅度调整。
+// 参数：
+// - theta_extrap: 外插的基础角度。
+// - freq_scale: 频率缩放因子。
+// - corr_dims: 修正维度范围。
+// - i0: 当前的维度索引。
+// - ext_factor: 外插比例因子。
+// - mscale: 幅度缩放因子。
+// - cos_theta, sin_theta: 输出结果的cos和sin分量。
 static void rope_yarn(
     float theta_extrap, float freq_scale, float corr_dims[2], int64_t i0, float ext_factor, float mscale,
     float * cos_theta, float * sin_theta) {
-    // Get n-d rotational scaling corrected for extrapolation
-    float theta_interp = freq_scale * theta_extrap;
+    float theta_interp = freq_scale * theta_extrap; // 插值的角度
     float theta = theta_interp;
+
     if (ext_factor != 0.0f) {
         float ramp_mix = rope_yarn_ramp(corr_dims[0], corr_dims[1], i0) * ext_factor;
         theta = theta_interp * (1 - ramp_mix) + theta_extrap * ramp_mix;
-
-        // Get n-d magnitude scaling corrected for interpolation
-        mscale *= 1.0f + 0.1f * logf(1.0f / freq_scale);
+        mscale *= 1.0f + 0.1f * logf(1.0f / freq_scale); // 幅度调整
     }
+
     *cos_theta = cosf(theta) * mscale;
     *sin_theta = sinf(theta) * mscale;
 }
 
+// 初始化旋转嵌入的缓存，支持YaRN扩展。
+// 参数：
+// - theta_base: 基础角度。
+// - freq_scale: 频率缩放因子。
+// - freq_factors: 频率因子数组。
+// - corr_dims: 修正维度范围。
+// - ne0: 嵌入维度数。
+// - ext_factor: 外插因子。
+// - mscale: 幅度缩放。
+// - cache: 输出的缓存数组。
+// - sin_sign: sin值的符号（用于正向或反向处理）。
+// - theta_scale: 角度缩放因子。
 static void ggml_rope_cache_init(
      float theta_base, float freq_scale, const float * freq_factors, float corr_dims[2], int64_t ne0, float ext_factor, float mscale,
      float * cache, float sin_sign, float theta_scale) {
-    // ref: https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py
     float theta = theta_base;
     for (int64_t i0 = 0; i0 < ne0; i0 += 2) {
-        const float ff = freq_factors ? freq_factors[i0/2] : 1.0f;
-        rope_yarn(
-            theta/ff, freq_scale, corr_dims, i0, ext_factor, mscale, &cache[i0 + 0], &cache[i0 + 1]
-        );
-        cache[i0 + 1] *= sin_sign;
-
-        theta *= theta_scale;
+        const float ff = freq_factors ? freq_factors[i0 / 2] : 1.0f; // 频率因子选择
+        rope_yarn(theta / ff, freq_scale, corr_dims, i0, ext_factor, mscale, &cache[i0 + 0], &cache[i0 + 1]);
+        cache[i0 + 1] *= sin_sign; // 反向处理时调整sin符号
+        theta *= theta_scale; // 角度缩放
     }
 }
 
-// 函数主入口
+// 主函数：实现前向或反向的RoPE计算逻辑，支持YaRN扩展。
+// 参数：
+// - params: 计算参数。
+// - dst: 目标张量。
+// - forward: 是否为前向计算。
 static void ggml_compute_forward_rope_f16(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
         const bool forward) {
 
+    // 提取参数，包括频率因子和修正范围
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
     const struct ggml_tensor * src2 = dst->src[2];
 
     float freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow;
-
-    //const int n_past     = ((int32_t *) dst->op_params)[0];
-    const int n_dims     = ((int32_t *) dst->op_params)[1];
-    const int mode       = ((int32_t *) dst->op_params)[2];
-    //const int n_ctx      = ((int32_t *) dst->op_params)[3];
+    const int n_dims = ((int32_t *) dst->op_params)[1];
+    const int mode = ((int32_t *) dst->op_params)[2];
     const int n_ctx_orig = ((int32_t *) dst->op_params)[4];
-    memcpy(&freq_base,   (int32_t *) dst->op_params +  5, sizeof(float));
-    memcpy(&freq_scale,  (int32_t *) dst->op_params +  6, sizeof(float));
-    memcpy(&ext_factor,  (int32_t *) dst->op_params +  7, sizeof(float));
-    memcpy(&attn_factor, (int32_t *) dst->op_params +  8, sizeof(float));
-    memcpy(&beta_fast,   (int32_t *) dst->op_params +  9, sizeof(float));
-    memcpy(&beta_slow,   (int32_t *) dst->op_params + 10, sizeof(float));
+    memcpy(&freq_base, (int32_t *) dst->op_params + 5, sizeof(float));
+    memcpy(&freq_scale, (int32_t *) dst->op_params + 6, sizeof(float));
+    memcpy(&ext_factor, (int32_t *) dst->op_params + 7, sizeof(float));
+    memcpy(&attn_factor, (int32_t *) dst->op_params + 8, sizeof(float));
+    memcpy(&beta_fast, (int32_t *) dst->op_params + 9, sizeof(float));
+    memcpy(&beta_slow, (int32_t *) dst->op_params + 10, sizeof(float));
 
     GGML_TENSOR_UNARY_OP_LOCALS
-
-    //printf("ne0: %d, ne1: %d, ne2: %d, ne3: %d\n", ne0, ne1, ne2, ne3);
-    //printf("n_past = %d, ne2 = %d\n", n_past, ne2);
-
-    GGML_ASSERT(nb0 == sizeof(ggml_fp16_t));
-
-    const int ith = params->ith;
-    const int nth = params->nth;
-
-    const int nr = ggml_nrows(dst);
-
-    GGML_ASSERT(n_dims <= ne0);
     GGML_ASSERT(n_dims % 2 == 0);
 
-    // rows per thread
-    const int dr = (nr + nth - 1)/nth;
-
-    // row range for this thread
-    const int ir0 = dr*ith;
-    const int ir1 = MIN(ir0 + dr, nr);
-
-    // row index used to determine which thread to use
-    int ir = 0;
-
-    const float theta_scale = powf(freq_base, -2.0f/n_dims);
-
+    // 计算角度缩放因子和修正维度范围
+    const float theta_scale = powf(freq_base, -2.0f / n_dims);
     float corr_dims[2];
     ggml_rope_yarn_corr_dims(n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow, corr_dims);
 
+    // 是否为NeoX模式
     const bool is_neox = mode & GGML_ROPE_TYPE_NEOX;
-
-    const float * freq_factors = NULL;
-    if (src2 != NULL) {
-        GGML_ASSERT(src2->type == GGML_TYPE_F32);
-        GGML_ASSERT(src2->ne[0] >= n_dims / 2);
-        freq_factors = (const float *) src2->data;
-    }
-
-    // backward process uses inverse rotation by cos and sin.
-    // cos and sin build a rotation matrix, where the inverse is the transpose.
-    // this essentially just switches the sign of sin.
+    const float * freq_factors = src2 ? (const float *) src2->data : NULL;
     const float sin_sign = forward ? 1.0f : -1.0f;
 
     const int32_t * pos = (const int32_t *) src1->data;
 
+    // 遍历张量的维度，逐步计算每个位置的旋转嵌入。
     for (int64_t i3 = 0; i3 < ne3; i3++) {
         for (int64_t i2 = 0; i2 < ne2; i2++) {
             const int64_t p = pos[i2];
+            float * cache = (float *) params->wdata + (ne0 + CACHE_LINE_SIZE_F32) * params->ith;
 
-            float * cache = (float *) params->wdata + (ne0 + CACHE_LINE_SIZE_F32)*ith;
             ggml_rope_cache_init(p, freq_scale, freq_factors, corr_dims, ne0, ext_factor, attn_factor, cache, sin_sign, theta_scale);
 
             for (int64_t i1 = 0; i1 < ne1; i1++) {
-                if (ir++ < ir0) continue;
-                if (ir   > ir1) break;
-
+                // 处理NeoX和非NeoX两种模式的嵌入旋转。
                 if (!is_neox) {
                     for (int64_t i0 = 0; i0 < n_dims; i0 += 2) {
                         const float cos_theta = cache[i0 + 0];
                         const float sin_theta = cache[i0 + 1];
 
-                        const ggml_fp16_t * const src = (ggml_fp16_t *)((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01 + i0*nb00);
-                              ggml_fp16_t * dst_data  = (ggml_fp16_t *)((char *)  dst->data + i3*nb3  + i2*nb2  + i1*nb1  + i0*nb0);
+                        const ggml_fp16_t * const src = (ggml_fp16_t *)((char *) src0->data + i3 * nb03 + i2 * nb02 + i1 * nb01 + i0 * nb00);
+                        ggml_fp16_t * dst_data  = (ggml_fp16_t *)((char *)  dst->data + i3 * nb3  + i2 * nb2  + i1 * nb1  + i0 * nb0);
 
                         const float x0 = GGML_FP16_TO_FP32(src[0]);
                         const float x1 = GGML_FP16_TO_FP32(src[1]);
 
-                        dst_data[0] = GGML_FP32_TO_FP16(x0*cos_theta - x1*sin_theta);
-                        dst_data[1] = GGML_FP32_TO_FP16(x0*sin_theta + x1*cos_theta);
+                        dst_data[0] = GGML_FP32_TO_FP16(x0 * cos_theta - x1 * sin_theta);
+                        dst_data[1] = GGML_FP32_TO_FP16(x0 * sin_theta + x1 * cos_theta);
                     }
                 } else {
                     for (int64_t i0 = 0; i0 < n_dims; i0 += 2) {
-                        const int64_t ic = i0/2;
-
+                        const int64_t ic = i0 / 2;
                         const float cos_theta = cache[i0 + 0];
                         const float sin_theta = cache[i0 + 1];
 
-                        const ggml_fp16_t * const src = (ggml_fp16_t *)((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01 + ic*nb00);
-                        ggml_fp16_t * dst_data  = (ggml_fp16_t *)((char *)  dst->data + i3*nb3  + i2*nb2  + i1*nb1  + ic*nb0);
+                        const ggml_fp16_t * const src = (ggml_fp16_t *)((char *) src0->data + i3 * nb03 + i2 * nb02 + i1 * nb01 + ic * nb00);
+                        ggml_fp16_t * dst_data  = (ggml_fp16_t *)((char *)  dst->data + i3 * nb3  + i2 * nb2  + i1 * nb1  + ic * nb0);
 
                         const float x0 = GGML_FP16_TO_FP32(src[0]);
-                        const float x1 = GGML_FP16_TO_FP32(src[n_dims/2]);
+                        const float x1 = GGML_FP16_TO_FP32(src[n_dims / 2]);
 
-                        dst_data[0]        = GGML_FP32_TO_FP16(x0*cos_theta - x1*sin_theta);
-                        dst_data[n_dims/2] = GGML_FP32_TO_FP16(x0*sin_theta + x1*cos_theta);
+                        dst_data[0] = GGML_FP32_TO_FP16(x0 * cos_theta - x1 * sin_theta);
+                        dst_data[n_dims / 2] = GGML_FP32_TO_FP16(x0 * sin_theta + x1 * cos_theta);
                     }
                 }
 
+                // 保持超出旋转范围的维度值不变。
                 for (int64_t i0 = n_dims; i0 < ne0; i0 += 2) {
-                    const ggml_fp16_t * const src = (ggml_fp16_t *)((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01 + i0*nb00);
-                    ggml_fp16_t * dst_data  = (ggml_fp16_t *)((char *)  dst->data + i3*nb3  + i2*nb2  + i1*nb1  + i0*nb0);
+                    const ggml_fp16_t * const src = (ggml_fp16_t *)((char *) src0->data + i3 * nb03 + i2 * nb02 + i1 * nb01 + i0 * nb00);
+                    ggml_fp16_t * dst_data  = (ggml_fp16_t *)((char *)  dst->data + i3 * nb3  + i2 * nb2  + i1 * nb1  + i0 * nb0);
 
                     dst_data[0] = src[0];
                     dst_data[1] = src[1];
@@ -455,6 +451,10 @@ static void ggml_compute_forward_rope_f16(
     }
 }
 ```
+
+
+
+
 
 ### 4 测试用例
 

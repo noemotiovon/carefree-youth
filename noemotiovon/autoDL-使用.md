@@ -1,6 +1,6 @@
 ### 1 使用流程
 
-1. 讲ssh公钥发送给任何已经能免密登陆的人。
+1. 将ssh公钥发送给任何已经能免密登陆的人。
 
 2. 通过ssh连接远程服务器。
 
@@ -46,5 +46,32 @@ source /etc/network_turbo
 unset http_proxy && unset https_proxy
 ```
 
+### 3 资源分配
 
+1. 为每个开发者创建用户角色
+
+```bash
+# 假设开发者的用户名为 wl
+useradd -m -s /bin/bash dev1
+passwd 123456  # 设置用户密码
+```
+
+2. 创建共享用户组
+
+```bash
+groupadd devgroup
+```
+
+3. 将开发者加入共享组
+
+```bash
+usermod -aG devgroup dev1
+```
+
+4. 将 `/root/autodl-tmp` 的所有者设置为该组，并更改权限：
+
+```bash
+chown -R :devgroup /root/autodl-tmp
+chmod -R 770 /root/autodl-tmp
+```
 
