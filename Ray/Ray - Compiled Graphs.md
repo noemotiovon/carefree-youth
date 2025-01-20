@@ -8,7 +8,7 @@
 
 
 
-![11_Ray-Compiled-Graphs](Images/11_Ray-Compiled-Graphs.png)
+![11_Ray-Compiled-Graphs](images/11_Ray-Compiled-Graphs.png)
 
 ## 1 Introduction
 
@@ -42,7 +42,7 @@ ray.get(compiled_graph.execute(1))
 
 ## 2 Introducing Compiled Graphs in Ray
 
-![11_Introducing-Ray-Compiled-Graphs](Images/11_Introducing-Ray-Compiled-Graphs.gif)
+![11_Introducing-Ray-Compiled-Graphs](images/11_Introducing-Ray-Compiled-Graphs.gif)
 
 **Compiled Graphs** 是 Ray 中的一项新功能，它提供了类似经典 Ray Core 的 API，同时具备以下三大优势：
 
@@ -110,7 +110,7 @@ with ray.dag.InputNode() as inp:
 
 这将生成如下的 Ray DAG：
 
-![12_Ray-DAG](Images/12_Ray-DAG-New.png)
+![12_Ray-DAG](images/12_Ray-DAG-New.png)
 
 现在，为了使用 **Compiled Graphs**，我们使用以下 `experimental_compile` 命令。Ray 将预先分配运行图所需的所有资源，从而使得图的执行速度相比标准的动态运行时大大加快：
 
@@ -131,7 +131,7 @@ print(result)
 
 这将生成如下有向无环图 (DAG)：
 
-![12_Ray-DAG2](Images/13_Ray-DAG2.png)
+![12_Ray-DAG2](images/13_Ray-DAG2.png)
 
 我们可以像这样编译并执行：
 
@@ -187,7 +187,7 @@ compiled_graph = dag.experimental_compile()
 assert ray.get(compiled_graph.execute((10, ))) == (10, )
 ```
 
-![14_Ray-DAG3](Images/14_Ray-DAG3.png)
+![14_Ray-DAG3](images/14_Ray-DAG3.png)
 
 您可以查看[开发者指南]()以获取更多信息。
 
@@ -208,13 +208,13 @@ assert ray.get(compiled_graph.execute((10, ))) == (10, )
 
 对于更复杂的工作负载（如散布-聚合或任务链），**Ray Compiled Graphs** 的延迟最高可降低 **20 倍**。
 
-![15_Ray-Benchmark1](Images/15_Ray-Benchmark1.png)
+![15_Ray-Benchmark1](images/15_Ray-Benchmark1.png)
 
 我们还比较了 **Ray Core** 和 **Ray Compiled Graphs** 在 GPU 到 GPU 数据传输中的性能表现。
 
 我们进行了一个简单的回环通信基准测试，使用一个 **40MB 的 CUDA 张量**，分别在带有 **NVLink（A100）** 和不带 **NVLink（A10G）** 的机器上运行。测试过程中，将张量传输 **10 次**，并测量端到端的延迟。
 
-![16_Ray-Benchmark1](Images/16_Ray-Benchmark2.png)
+![16_Ray-Benchmark1](images/16_Ray-Benchmark2.png)
 
 默认情况下，**Ray Core** 并不支持对 Torch 张量的零拷贝序列化，也不使用 NCCL 进行通信。
 

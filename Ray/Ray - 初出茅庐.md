@@ -10,7 +10,7 @@ Ray最初是UC Berkeley的RISELab团队提出并主导开发的。RISELab专注�
 
 Ray 的核心开发人员包括 Philipp Moritz、Robert Nishihara、Ion Stoica 等人。这些研究者都是分布式系统和大数据领域的专家。Ray 后来逐渐吸引了开源社区的广泛参与，并由 Anyscale 公司进一步推动其商业化和大规模应用。
 
-![09_RayFramework](./Images/09_RayFramework.svg)
+![09_RayFramework](./images/09_RayFramework.svg)
 
 
 
@@ -30,7 +30,7 @@ Ray 的核心开发人员包括 Philipp Moritz、Robert Nishihara、Ion Stoica �
 
 开源、Python、通用、分布式计算库。
 
-![10_Ray-Core架构](./Images/10_Ray-Core架构.png)
+![10_Ray-Core架构](./images/10_Ray-Core架构.png)
 
 1. Ray Cluster 是一个分布式系统架构，通常由多个节点（Node）组成：
 
@@ -292,7 +292,7 @@ Ray 的核心开发人员包括 Philipp Moritz、Robert Nishihara、Ion Stoica �
 
 ### 3.3 Object
 
-![06_Ray架构图](./Images/06_Ray架构图.png)
+![06_Ray架构图](./images/06_Ray架构图.png)
 
 1. **远程 Objects** 确实被存储在 **Ray Cluster** 的各个 **Object Store** 中。每个节点有一个 **Object Store**，用于存储计算过程中产生的数据（即远程对象）。这些远程对象在计算过程中可以存储在集群中的任何节点，而不需要与特定的任务或 Actor 的持有者绑定。
 2. **Object Store** 提供了分布式存储和缓存机制，使得数据在任务间可以有效共享，并通过 **Object refs**（引用）在不同的任务或节点之间传递。

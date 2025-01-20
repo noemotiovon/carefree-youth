@@ -49,7 +49,7 @@ Job 是一个逻辑上的集合，包含由同一 Driver 发起的 Tasks、Objec
 
 ### 设计
 
-![19_Ray-Cluster](./Images/19_Ray-Cluster.png)
+![19_Ray-Cluster](./images/19_Ray-Cluster.png)
 
 一个 Ray 集群由一组同类型的 Worker 节点（Worker Nodes）和一个中心化的全局控制存储实例（Global Control Store, GCS）组成。
 
@@ -61,7 +61,7 @@ Job 是一个逻辑上的集合，包含由同一 Driver 发起的 Tasks、Objec
 
 ### 所有权关系
 
-![20_Ray-ownershop](./Images/20_Ray-ownershop.png)
+![20_Ray-ownershop](./images/20_Ray-ownershop.png)
 
 Ray 的大部分元数据通过一种**去中心化**的机制来管理，称为**所有权（ownership）**。具体来说，每个 Worker 进程负责管理并“拥有”其提交的任务（Task）以及任务返回的结果（`ObjectRef`）。
 
@@ -170,13 +170,13 @@ Ray 的核心组件是用 C++ 开发的。为了支持 Python 和 Java，Ray 提
 
 由于这些核心库采用 C++ 开发，Ray 的不同语言运行时共享一个高效的、统一的 **Ray Worker 协议**，从而确保各个语言的执行环境能够高效地协同工作。
 
-![21_Ray-CoreWorker](./Images/21_Ray-CoreWorker.png)
+![21_Ray-CoreWorker](./images/21_Ray-CoreWorker.png)
 
 ### TASK生命周期
 
 在 Ray 中，**Task 的所有者**负责提交任务，并将任务执行的结果（`ObjectRef`）解析为其对应的值。提交任务的进程即成为该任务返回值的所有者。任务所有者通过 Raylet 获取资源来执行任务。例如，在一个任务执行中，**Driver** 是结果 “A” 的所有者，而 **Worker 1** 是结果 “B” 的所有者。
 
-![22_Ray-TaskLifeCycle](./Images/22_Ray-TaskLifeCycle.png)
+![22_Ray-TaskLifeCycle](./images/22_Ray-TaskLifeCycle.png)
 
 当任务被提交后，任务所有者会等待所有依赖项的可用性。这些依赖项可能是 `ObjectRef`，即作为任务参数传入的对象引用。需要注意的是，这些依赖必须是本地可访问的。任务所有者会考虑在集群中尽可能快速地使这些依赖变得可用。一旦所有依赖项准备就绪，任务所有者就会从分布式调度器中获取资源来执行任务。当资源可用时，调度器批准任务的提交，并将相应的资源分配给任务所有者所在的 Worker。
 
@@ -221,7 +221,7 @@ Ray 区分两种类型的任务错误：
 
 ### Object 生命周期
 
-![23_Ray-ObjectLifeCycle](./Images/23_Ray-ObjectLifeCycle.png)
+![23_Ray-ObjectLifeCycle](./images/23_Ray-ObjectLifeCycle.png)
 
 在 Ray 中，Worker 可以创建和获取对象（Object），而每个对象的生命周期由其所有者负责管理。对象的所有者负责判断何时可以安全地释放对象，以有效利用内存资源。
 
@@ -276,7 +276,7 @@ Ray 提供两种方式来解析 `ObjectRef` 并获取其值：
 
 与普通任务（Task）的完全去中心化机制不同，**Actor 的生命周期管理采用中心化模式**，由 GCS 统一负责。
 
-![24_Ray-ActorLifeCycle](./Images/24_Ray-ActorLifeCycle.png)
+![24_Ray-ActorLifeCycle](./images/24_Ray-ActorLifeCycle.png)
 
 #### 1 Actor的创建过程
 
@@ -355,7 +355,7 @@ Ray 的设计目标是，在单个 Worker 进程失败的情况下，确保集�
 
 ### 应用模型故障
 
-![25_Ray-AppError](./Images/25_Ray-AppError.png)
+![25_Ray-AppError](./images/25_Ray-AppError.png)
 
 Ray 的系统故障设计体现了 **task 和 object 的生命周期与其所有者紧密绑定** 的特性。例如，在上图所示的场景中，如果 Worker `a` 发生故障，由 `a` 创建的对象（如 `b` 和 `z`，图中灰色部分）都会被统计为不可用。这种机制对系统的行为有重要意义，特别是在以下场景下：
 
@@ -394,7 +394,7 @@ Ray 正在引入多项优化以进一步提高系统的弹性和可靠性：
 
 ### 对象管理
 
-![26_Ray-ObjectManage](./Images/26_Ray-ObjectManage.png)
+![26_Ray-ObjectManage](./images/26_Ray-ObjectManage.png)
 
 #### 1 对象存储与解析：Ray 的内存管理机制
 
@@ -476,7 +476,7 @@ Ray 中对象解析有两种路径：**进程内解析**和**分布式解析**�
    - 如果 Worker A 的本地进程存储无法满足 Worker B 的请求，系统会将对象推送到共享内存，并通过分布式协议完成解析。
    - Worker B 随后从其本地共享内存中读取对象值，实现高效访问。
 
-![27_Ray-ObjectParsing](./Images/27_Ray-ObjectParsing.png)
+![27_Ray-ObjectParsing](./images/27_Ray-ObjectParsing.png)
 
 上图表示：
 
@@ -509,7 +509,7 @@ Ray 中对象解析有两种路径：**进程内解析**和**分布式解析**�
   - 对象会通过分布式协议从主拷贝所在节点传输到调用者节点，并存储在调用者的共享内存中供后续使用。
 - **共享内存优势**：对象在本地节点的共享内存中只存储一次，即便被多个进程访问，也能实现内存的高效利用。
 
-![28_Ray-MemoryManage](./Images/28_Ray-MemoryManage.png)
+![28_Ray-MemoryManage](./images/28_Ray-MemoryManage.png)
 
 > 主拷贝和可清除的拷贝：主拷贝（在 Node 2）不能被清除。在 Node 1（通过`ray.get`创建） 和 Node 3（通过任务提交创建） 的拷贝在内存不够的情况下可以被清除。
 
@@ -664,7 +664,7 @@ Ray 对特定的资源提供了额外支持和优化：
 
 ### 任务调度（raylet 所有者协议）
 
-![29_Ray-Schedule](./Images/29_Ray-Schedule.png)
+![29_Ray-Schedule](./images/29_Ray-Schedule.png)
 
 #### 1 依赖解析
 
@@ -708,11 +708,11 @@ Ray 将任务参数分为以下三种类型：
 4. **公平性保障**
    为了保证资源分配的公平性，如果某个所有者在足够长的时间内（通常是几秒）未能安排任何任务执行，raylet 会释放分配给该所有者的 worker，以便将资源分配给其他需要任务执行的客户端。
 
-![30_Ray-SourceFulfillment](./Images/30_Ray-SourceFulfillment.png)
+![30_Ray-SourceFulfillment](./images/30_Ray-SourceFulfillment.png)
 
 所有者可能会调度很多任务到借用的 worker，只要授权的资源是足够的。因为，借用可以理解为对同类调度请求的一种优化
 
-![30_Ray-SourceFulfillment2](./Images/30_Ray-SourceFulfillment2.png)
+![30_Ray-SourceFulfillment2](./images/30_Ray-SourceFulfillment2.png)
 
 当 **raylet** 无法满足某个资源请求时，会将结果返回给所有者，并提供一个可以重新请求资源的地址。这种机制被称为 **"spillback"（溢出返回）调度**。其主要流程如下：
 
@@ -763,7 +763,7 @@ Ray 的弹性伸缩（也被称为 Cluster Launcher），是指初始化集群�
 
 #### 1 Actor 创建
 
-![31_Ray-ActorCreate](./Images/31_Ray-ActorCreate.png)
+![31_Ray-ActorCreate](./images/31_Ray-ActorCreate.png)
 
 当通过 Python 代码来创建 Actor，创建的 worker 会同步注册创建 actor 的信息到 GCS。这样就能够让任何其他的 worker 在发现创建 actor 的 worker 中止情况下能够发现这个错误。
 
@@ -773,17 +773,17 @@ Ray 的弹性伸缩（也被称为 Cluster Launcher），是指初始化集群�
 
 #### 2 Actor 任务执行
 
-![32-Ray-ActorRun](./Images/32-Ray-ActorRun.png)
+![32-Ray-ActorRun](./images/32-Ray-ActorRun.png)
 
 每个 Actor 都能够有不限数量的调用者。一个 Actor 句柄代表一个调用者，它包含了它引用的 actor 的 RPC 地址。通过这个句柄的调用就连接并且提交任务到这个地址。
 
-![33_Ray-ActorIncrement](./Images/33_Ray-ActorIncrement.png)
+![33_Ray-ActorIncrement](./images/33_Ray-ActorIncrement.png)
 
 每个提交的任务都会在调用端设置一个序列号，用来确认获得每个任务都是按照提交的顺序来返回的，即使消息在传递的过程中重新排序也不会影响这个顺序。不能保证跨调用者的调用次序。例如，调用者之间的执行顺序会非常依赖消息延迟和任务依赖可用的顺序。
 
 ## 系统架构
 
-![34_Ray-SystemArchitecture](./Images/34_Ray-SystemArchitecture.png)
+![34_Ray-SystemArchitecture](./images/34_Ray-SystemArchitecture.png)
 
 协议全貌(大部分通过 gRPC )：
 
@@ -810,7 +810,7 @@ def A():
 
 我们开始用 worker 1 来执行 A，任务 B 和 C 已经提交到 worker 1。因此，worker 1 的本地所有权关系表已经包含了 X 和 Y。首先，我们看一下 B 的执行路径：
 
-![35_Ray-Sample1](./Images/35_Ray-Sample1.png)
+![35_Ray-Sample1](./images/35_Ray-Sample1.png)
 
 1. worker 1 向它的本地调度申请资源执行 B
 2. 调度返回消息，告诉 worker 1 重试这个请求到 节点 2
@@ -823,7 +823,7 @@ def A():
 
 接下来，我们展示一个例子，worker 执行一个任务并且储存返回结果到分布式内存：
 
-![35_Ray-Sample2](./Images/35_Ray-Sample2.png)
+![35_Ray-Sample2](./images/35_Ray-Sample2.png)
 
 1. 如果 worker 2 执行完成 B 并且把返回的结果 X 存在它自己的本地存储
    1. 节点 2 会异步的通信对象表，记录 X 目前在节点2（虚箭头）
@@ -839,7 +839,7 @@ def A():
 
 现在B 已经执行完成， 任务 C 能够开始执行了。worker 1 接下来用同样调度任务 B 的协议来调度 C：
 
-![35_Ray-Sample3](./Images/35_Ray-Sample3.jpg)
+![35_Ray-Sample3](./images/35_Ray-Sample3.jpg)
 
 1. worker 1 向它的本地调度请求资源执行 C
 
@@ -851,7 +851,7 @@ def A():
 
 5. 节点 3 的调度看到 C 依赖 X，但是它在本地没有 X 的拷贝。调度 3 就把 C 进入队列，同时向对象表询问 X 的地址。任务 3 需要一个 X 的本地拷贝来执行任务。
 
-![35_Ray-Sample4](./Images/35_Ray-Sample4.png)
+![35_Ray-Sample4](./images/35_Ray-Sample4.png)
 
 1. 对象表响应了节点 3 的信息，告诉它 X 在节点 2
 2. 节点 3 的调度向节点 2 的调度申请发送一个 X 的拷贝
@@ -865,7 +865,7 @@ def A():
 
 任务 C 执行并且返回一个对象，这个对象是小对象能够存储在进程的内存中：
 
-![35_Ray-Sample5](./Images/35_Ray-Sample5.png)
+![35_Ray-Sample5](./images/35_Ray-Sample5.png)
 
 1. worker 1 发送任务 C 到 worker 3 执行。
 2. worker 3 从本地对象存储中获得了 X 的值(类似于 `ray.get`操作)，并且运行 `C(X)`。
@@ -875,7 +875,7 @@ def A():
 
 #### 5 垃圾回收
 
-![35_Ray-Sample6](./Images/35_Ray-Sample6.png)
+![35_Ray-Sample6](./images/35_Ray-Sample6.png)
 
 1. worker 1 擦除了它和对象 X 的入口。这样做是安全的，因为任务 C 已经执行完成，而只有 C 拥有对 X 的引用。worker 1 保留了它和 Y 的入口，因为应用还需要一个对 y 的 ObjectID 的引用
    1. 最后，所有的 X 的拷贝都在集群里被删除。这个可以在第一步之后的任何一步操作。就像上面记录的，节点 3 的 X 的拷贝也可能在第一步之后删除，如果节点 3 的对象存储存在内存紧张的情况
