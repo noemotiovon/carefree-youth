@@ -129,6 +129,28 @@ print(result)
 # ["hello", "hello", "hello"]
 ```
 
+这是全部内容！你可以使用相同的程序来扩展你的工作负载。这些 API 在多节点环境下同样适用。
+
+在底层，Ray 预先分配资源，以减少执行过程中的开销：
+
+* 新的 Compiled Graphs 后端在编译时静态分配每个 actor 任务的输入和输出缓冲区，而不是在每次执行 DAG 时动态分配。这些缓冲区在执行时被重复使用，actor 始终直接将结果推送到需要它的进程。
+
+* 所有位于同一 Ray 节点上的 actor 将共享同一个物理输入缓冲区，该缓冲区由 Ray Compiled Graphs 后端进行同步。这有助于减少每个 task 的开销，例如序列化 task 参数、为参数分配内存以及调用 task。
+
+* 此外，该后端还会提前分配 actor 的执行循环。每个 actor 不是等待 RPC 来执行下一个 task，而是在循环中等待下一个 echo task 的参数（通过已分配的缓冲区传递）。
+
+那么，如果我们想要在不同的 actor task 之间进行流水线化执行呢？一个典型的例子是流水线并行推理（pipeline-parallel inference），在这个场景中，我们通过共享内存将一个 actor 的中间输出传递给下一个 actor，并且数据传输应该与计算任务并行流水线化。我们可以通过在检索输出之前多次执行相同的 DAG 来在不同的 actor 之间实现流水线化执行：
+
+```python
+# Teardown the previous dag.
+compiled_graph.teardown()
+with ray.dag.InputNode() as inp:
+  for actor in actors:
+    # Pass each actor task output as input to the next actor task.
+    inp = actor.fwd.bind(inp)
+  dag = inp
+```
+
 这将生成如下有向无环图 (DAG)：
 
 ![12_Ray-DAG2](images/13_Ray-DAG2.png)
