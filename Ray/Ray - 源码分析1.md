@@ -133,21 +133,22 @@
    - 建议开启小梯子，不止加速效果很明显，中间有很多包下载会失败
 
 【问题汇总】
-**1 编译redis时，报错 /bin/sh: 1: pkg-config: not found**
 
-解决方法：
+**1 当你对系统进行 Bazel 不可能知道的操作时，最好运行`bazel clean --expunge`。这只是一种更礼貌的做法`rm -rf ~/.cache/bazel`:)**
 
-```bash
-sudo apt-get install pkg-config
-```
+**2 ubuntu 系统版本：24.04，gcc 版本：13.3.0，clang 版本：18.1.3**
+
+
+
+
+
+
 
 
 
 # （三）GCS
 
-
-
-
+1. 
 
 
 
