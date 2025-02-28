@@ -138,9 +138,15 @@
 
 **2 ubuntu 系统版本：24.04，gcc 版本：13.3.0，clang 版本：18.1.3**
 
+**3 在Ascend环境上，有可能构建环境会错误的选择到gcc和lld，会导致一些奇怪的编译错误（例如，你的环境变量中存在lld，被识别，但是构建过程中并不会使用非系统路径下的lld等）。这时可以通过指定LD来解决：在 ~/.bazelrc 中加入：build --linkopt=-fuse-ld=gold**
 
+**4 通过下面的脚本对PATH中的值去重**
 
+```bash
+export PATH=$(echo $PATH | tr ':' '\n' | awk '!seen[$0]++' | tr '\n' ':')
+```
 
+**5 **
 
 
 
@@ -148,7 +154,200 @@
 
 # （三）GCS
 
-1. 
+## 核心组件
+
+**1.节点管理 (GcsNodeManager)**
+
+- 负责管理集群中的节点
+- 处理节点注册、心跳和故障检测
+
+**2.Actor 管理 (GcsActorManager)**
+
+- 管理 Actor 的创建、销毁和重建
+- 处理 Actor 调度和故障恢复
+
+**3.资源管理 (GcsResourceManager)**
+
+- 管理集群资源
+- 追踪节点资源使用情况
+
+**4.任务管理 (GcsTaskManager)**
+
+管理任务的调度和执行
+
+**5.存储实现**
+
+```c++
+enum class StorageType {
+  IN_MEMORY,      // 内存存储
+  REDIS_PERSIST,  // Redis 持久化存储
+  UNKNOWN
+};
+```
+
+## 核心功能
+
+**1. 服务启动流程**
+
+```c++
+void GcsServer::Start() {
+  // 1. 初始化 KV 管理器
+  InitKVManager();
+
+  // 2. 异步加载 GCS 表数据
+  auto gcs_init_data = std::make_shared<GcsInitData>();
+  gcs_init_data->AsyncLoad();
+
+  // 3. 初始化各个管理器
+  InitGcsNodeManager();
+  InitGcsActorManager(); 
+  InitGcsResourceManager();
+  // ...
+
+  // 4. 启动 RPC 服务
+  rpc_server_.Run();
+}
+```
+
+在 **单机模式** 下，`ray.init()` 会触发 GCS Server 启动。
+
+在 **集群模式** 下，GCS Server 是 `ray start --head` 时启动的，而 `ray.init()` 只会连接到已存在的 GCS Server。
+
+**2.事件监听机制**
+
+```c++
+void GcsServer::InstallEventListeners() {
+  // 节点事件
+  gcs_node_manager_->AddNodeAddedListener();
+  gcs_node_manager_->AddNodeRemovedListener();
+
+  // Worker 事件  
+  gcs_worker_manager_->AddWorkerDeadListener();
+
+  // Job 事件
+  gcs_job_manager_->AddJobFinishedListener();
+}
+```
+
+**3. 调度机制**
+
+```c++
+// 资源变化时触发调度
+gcs_resource_manager_->AddResourcesChangedListener([this] {
+  // 调度待处理的 placement groups
+  gcs_placement_group_manager_->SchedulePendingPlacementGroups();
+  // 调度待处理的任务
+  cluster_task_manager_->ScheduleAndDispatchTasks();
+});
+```
+
+## 核心代码
+
+### gcs_client
+
+**1. accessor**
+
+- accessor访问器主要用于**访问 GCS 中存储**的不同类型的数据
+- 每个访问器类都提供了一系列异步和同步方法来：增删改查+订阅
+- 大量使用异步操作,通过回调函数处理结果
+- 支持超时机制
+- 提供本地缓存功能
+
+**2. global_state_accessor**
+
+`GlobalStateAccessor` 是用来为语言前端(如 Python 的 state.py)提供同步接口来访问 GCS 中的数据。
+
+`GlobalStateAccessor` 的 C++ 实现是通过 **Python C 扩展**（也叫 Python C API）导入到 `ray._raylet` 模块中的，并不是直接在 `ray/_raylet.py` 这个 Python 文件里定义的。**`ray._raylet` 不是 Python 代码，而是一个 C++ 编写的 Python C 扩展模块**（共享库 `.so/.pyd`）。
+
+Ray 使用 **pybind11**（一个 C++ 绑定 Python 的库）来暴露 `GlobalStateAccessor` 给 Python。
+
+* 同步接口
+* 序列化处理：数据以序列化字符串形式返回,使用时需要用 protobuf 反序列化
+* 线程安全，多重所保护
+* 连接管理，Job 相关，Node 相关，Actor 相关，Placement Group 相关
+
+### gcs_server
+
+| 文件名                        | 主要功能             | 核心组件/类              | 关键特性                                                     |
+| ----------------------------- | -------------------- | ------------------------ | ------------------------------------------------------------ |
+| gcs_server.h/cc               | GCS 服务器的主要实现 | GcsServer                | - 管理所有 GCS 服务 <br />- 处理 RPC 请求 <br />- 协调各个组件 |
+| gcs_resource_manager.h        | 资源管理器           | GcsResourceManager       | - 集群资源管理 <br />- 资源分配 - 资源追踪                   |
+| gcs_resource_scheduler.h      | 资源调度器           | GcsResourceScheduler     | - 资源调度策略 <br />- 负载均衡 - 调度优化                   |
+| gcs_actor_manager.h           | Actor 管理器         | GcsActorManager          | - Actor 生命周期管理 <br />- Actor 调度 - 故障恢复           |
+| gcs_placement_group_manager.h | 放置组管理器         | GcsPlacementGroupManager | - 放置组创建/删除 <br />- 资源捆绑管理 <br />- 调度策略      |
+| gcs_node_manager.h            | 节点管理器           | GcsNodeManager           | - 节点注册/注销 <br />- 心跳监控 <br />- 节点状态管理        |
+| gcs_worker_manager.h          | Worker 管理器        | GcsWorkerManager         | - Worker 生命周期 <br />- Worker 分配 - 状态追踪             |
+| gcs_job_manager.h             | Job 管理器           | GcsJobManager            | - Job 提交/完成 <br />- Job 状态管理 <br />- 资源分配        |
+| gcs_table_storage.h           | 表存储接口           | GcsTableStorage          | - 元数据存储 <br />- 状态持久化 <br />- 数据访问接口         |
+| gcs_redis_failure_detector.h  | Redis 故障检测器     | GcsRedisFailureDetector  | - Redis 健康检查 <br />- 故障检测 <br />- 自动恢复           |
+| gcs_init_data.h               | 初始化数据管理       | GcsInitData              | - 系统初始化数据 <br />- 启动配置 <br />- 状态恢复           |
+| gcs_function_manager.h        | 函数管理器           | GcsFunctionManager       | - 函数注册 <br />- 版本管理 <br />- 函数元数据               |
+| gcs_kv_manager.h              | KV 存储管理器        | GcsKVManager             | - 键值存储 <br />- 元数据管理 <br />- 数据同步               |
+
+### pubsub
+
+**1. GcsPublisher类/GcsSubscriber/PythonGcsPublisher/PythonGcsSubscriber**
+
+* 状态同步，支持各种消息类型（Actor/Job/NodeInfo/Error）
+* 事件通知
+* 资源更新
+
+### store_client
+
+**1. in_memory_store_client**
+
+* 实现了所有必要的存储操作
+* 内存管理，使用智能指针管理表对象，自动清理不再使用的资源
+* 并发控制：细粒度锁控制，表级别的互斥访问
+* 支持异步操作完成通知
+* 高性能访问/查找
+
+**2. observable_store_client**
+
+* 跟踪系统状态：Actor 状态监控，资源状态追踪，任务状态更新
+* 提供了一种机制来监控和响应系统状态变化
+* 支持组件间的松耦合通信
+* 实现了高效的状态同步机制
+* 便于实现复杂的依赖关系和状态管理
+
+**3. redis_store_client**
+
+RedisStoreClient 提供了一个可靠的分布式存储实现，适合作为 Ray 系统的持久化存储后端。
+
+
+
+# （四）Object Manager
+
+| 文件名                                | 主要功能             | 核心组件                      | 关键特性                                                     |
+| ------------------------------------- | -------------------- | ----------------------------- | ------------------------------------------------------------ |
+| object_manager.h/cc                   | 对象管理器的核心实现 | ObjectManager                 | - 对象的推送/拉取 <br />- 对象生命周期管理 <br />- RPC 服务处理 <br />- 内存管理 |
+| object_buffer_pool.h/cc               | 对象缓冲池管理       | ObjectBufferPool              | - 内存缓冲区管理 <br />- 对象数据传输 <br />- 内存复用       |
+| chunk_object_reader.h/cc              | 分块对象读取器       | ChunkObjectReader             | - 大对象分块读取 <br />- 流式传输 <br />- 内存优化           |
+| pull_manager.h/cc                     | 对象拉取管理         | PullManager                   | - 对象拉取请求管理 <br />- 重试机制 <br />- 优先级调度       |
+| push_manager.h/cc                     | 对象推送管理         | PushManager                   | - 对象推送请求管理 <br />- 流量控制 <br />- 失败重试         |
+| object_directory.h/cc                 | 对象目录服务         | ObjectDirectory               | - 对象位置跟踪 <br />- 对象元数据管理<br />- 位置更新通知    |
+| ownership_based_object_directory.h/cc | 基于所有权的对象目录 | OwnershipBasedObjectDirectory | - 对象所有权管理 <br />- 生命周期控制 <br />- 垃圾回收       |
+| plasma/store_runner.h/cc              | Plasma 存储运行器    | PlasmaStoreRunner             | - 共享内存管理 <br />- 对象持久化<br />- 存储服务            |
+| spilled_object_reader.h/cc            | 内存溢出管理         | SpilledObjectReader           | - 提供高效可靠的溢出对象读取机制 <br />- 管理磁盘IO操作<br />- 支持大对象的高效处理 |
+| common.h                              | 通用定义和工具       | -                             | - 常量定义 <br />- 工具函数<br />- 类型定义                  |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
