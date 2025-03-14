@@ -261,3 +261,548 @@ assert ray.get(compiled_graph.execute((10, ))) == (10, )
 具体来说，通过对文本和视觉编码器分别应用不同的并行方法，并将较小的文本编码器部署在更具性价比的 GPU 上，我们观察到训练吞吐量提高了 **20%**，并且与 PyTorch 的标准 FSDP 实现相比，**每美元 Token 处理效率提升了 43%**。
 
 此外，我们还对多种流水线并行调度算法（如 **afab**、**1f1b** 和 **zero bubble**，参考 [论文链接](https://arxiv.org/pdf/2401.10241)）进行了原型设计。我们可以用不到 **70 行代码** 表达复杂的流水线调度算法，同时在 4 台 A100 GPU 上运行 Llama 7B 模型时，性能与最先进的库（如 Deepspeed）相当。我们计划进一步通过更大规模的工作负载改进流水线并行训练的性能。
+
+
+
+
+
+
+
+```mermaid
+---
+title: DAGNode
+---
+classDiagram
+    DAGNodeBase <|-- DAGNode
+    DAGNode <|-- ClassNode
+    DAGNode <|-- ClassMethodNode
+    DAGNode <|-- FunctionNode
+    DAGNode <|-- InputNode
+    DAGNode <|-- InputAttributeNode
+    DAGNode <|-- MultiOutputNode
+    DAGNode <|-- DeploymentNode
+    Communicator <|-- _NcclGroup
+    
+   	class CompiledDAG{
+    		-Communicator _default_communicator
+    		-ChannelOutputType _default_type_hint
+    		-DAGDriverProxyActor _proxy_actor
+    		-_get_or_compiled()
+    		-_get_gpu_ids()
+    }
+    
+    class DAGNode{
+    		-TorchTensorType _type_hint
+        +experimental_compile()
+        +with_tensor_transport()
+    }
+    
+    class Communicator{
+        +initialize()
+        +get_actor_handles()
+        +get_rank()
+        +get_self_rank()
+        +get_world_size()
+        +send()
+        +recv()
+        +recv_stream()
+        +send_stream()
+        +send_stream()
+        +allreduce()
+        +destroy()
+        +get_transport_name()
+    }
+    
+    
+
+    
+
+```
+
+```mermaid
+---
+title: Channel
+---
+classDiagram    
+    ChannelOutputType <|-- SharedMemoryType
+    ChannelOutputType <|-- TorchTensorType
+    ChannelOutputType <|-- AutoTransportType
+    ChannelInterface <|-- TorchTensorNcclChannel
+    ChannelInterface <|-- CachedChannel
+    ChannelInterface <|-- IntraProcessChannel
+    ChannelInterface <|-- CompositeChannel
+    ChannelInterface <|-- _TorchTensorNcclChannel
+    
+    
+    class ChannelOutputType{
+    		+register_custom_serializer()
+        +create_channel()
+        +requires_comm_backend()
+        +get_custom_communicator()
+        +set_communicator_id()
+    }
+    
+    class ChannelInterface{
+    		+ensure_registered_as_writer()
+        +ensure_registered_as_reader()
+        +write()
+        +read()
+        +close()
+    }
+    
+    class TorchTensorNcclChannel{
+    		ActorHandle _writer
+    		List[Tuple["ray.actor.ActorHandle"] _reader_and_node_list
+    		IntraProcessChannel _local_channel
+    		_TorchTensorNcclChannel _gpu_data_channel
+    		Channel _cpu_data_channel
+    }
+```
+
+
+
+1. 通过`DAGNode.with_tensor_transport()`构建Tensor的`DAGNode`，关键入参*transport*，*transport*支持传入`字符串nccl/auto`和`Communicator`
+2. 入口`DAGNode.experimental_compile()`，关键入参：*_overlap_gpu_communication*，*_default_communicator*
+
+2. 调用方法：`build_compiled_dag_from_ray_dag`，构造CompiledDAG
+3. 在`build_compiled_dag_from_ray_dag`内部，CompiledDAG中构造Communicator和ChannelOutputType，并构造一个Acotr代理类
+4. 在`build_compiled_dag_from_ray_dag`内部，遍历DAG，并将节点加入CompiledDAG，root.traverse_and_apply(_build_compiled_dag)
+5. 在`build_compiled_dag_from_ray_dag`内部，然后执行CompiledDAG._get_or_compiled()方法去编译执行路径
+6. 在`_get_or_compiled`内部，调用`CompiledDAG._preprocess()`，其又调用`CompiledDAG._init_communicators`，完成通信组的初始化
+
+
+
+```
+   		 ┌──────────┐
+       │ InputNode│
+       └────┬─────┘
+            │
+   ┌────────┴────────┐
+   │   PP Stage 0    │  <-- 第一流水线阶段
+   │ (TP Group: 4 workers)
+   └────────┬────────┘
+            │
+  ┌─────────┴─────────┐
+  │  For each worker: │
+  │  worker.execute_model_spmd.bind(input)
+  └─────────┬─────────┘
+            │
+  ┌─────────┴─────────┐
+  │ IntermediateOutput│  <-- 第一阶段输出，各节点计算结果
+  └─────────┬─────────┘
+            │   (中间张量经过with_tensor_transport转换)
+            │
+   ┌────────┴────────┐
+   │   PP Stage 1    │  <-- 第二流水线阶段
+   │ (TP Group: 4 workers)
+   └────────┬────────┘
+            │
+  ┌─────────┴─────────┐
+  │  For each worker: │
+  │  worker.execute_model_spmd.bind(intermediate_output)
+  └─────────┬─────────┘
+            │
+       ┌────┴────┐
+       │ Final   │  <-- 最终输出（MultiOutputNode）
+       │ Output  │
+       └─────────┘
+```
+
+
+
+#Client
+curl http://0.0.0.0:8000/v1/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "Qwen/Qwen2.5-0.5B-Instruct",
+        "prompt": "Beijing is a",
+        "max_tokens": 1000,
+        "temperature": 0
+    }'
+
+
+
+### GPU测试：
+
+#### 脚本
+
+```bash
+# DAG相关
+export VLLM_USE_RAY_SPMD_WORKER='1'
+export VLLM_USE_RAY_COMPILED_DAG='1'
+export VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM='1'
+
+# V1引擎
+export VLLM_USE_V1=1
+
+
+# Serve
+vllm serve Qwen/Qwen2.5-0.5B-Instruct \
+  --pipeline-parallel-size 2 \
+  --distributed-executor-backend ray \
+  --dtype half \
+  --disable-log-stats \
+  --disable-log-requests \
+  --trust-remote-code
+
+#Client
+python /home/lcg/github/vllm/benchmarks/benchmark_serving.py --backend vllm \
+                             --model Qwen/Qwen2.5-0.5B-Instruct \
+                             --dataset-name sharegpt \
+                             --dataset-path /home/lcg/github/ray/.lcg/ShareGPT_V3_unfiltered_cleaned_split.json \
+                             --num-prompts 100 \
+                             --port 8000 \
+                             --save-result \
+								             --result-dir .lcg/results \
+								             --request-rate 4
+```
+
+#### v0+GPU+PP2
+
+```bash
+============ Serving Benchmark Result ============
+Successful requests:                     100       
+Benchmark duration (s):                  36.75     
+Total input tokens:                      23260     
+Total generated tokens:                  21378     
+Request throughput (req/s):              2.72      
+Output token throughput (tok/s):         581.69    
+Total Token throughput (tok/s):          1214.59   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          62.49     
+Median TTFT (ms):                        55.77     
+P99 TTFT (ms):                           136.26    
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          22.79     
+Median TPOT (ms):                        20.74     
+P99 TPOT (ms):                           43.93     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           22.56     
+Median ITL (ms):                         18.35     
+P99 ITL (ms):                            91.85     
+==================================================
+```
+
+#### v0+GPU+PP2+DAG
+
+```bash
+============ Serving Benchmark Result ============
+Successful requests:                     100       
+Benchmark duration (s):                  29.08     
+Total input tokens:                      23260     
+Total generated tokens:                  21843     
+Request throughput (req/s):              3.44      
+Output token throughput (tok/s):         751.11    
+Total Token throughput (tok/s):          1550.95   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          45.79     
+Median TTFT (ms):                        43.48     
+P99 TTFT (ms):                           68.96     
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          11.94     
+Median TPOT (ms):                        11.74     
+P99 TPOT (ms):                           17.00     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           11.72     
+Median ITL (ms):                         10.52     
+P99 ITL (ms):                            44.68     
+==================================================
+```
+
+#### v0+GPU+PP2+DAG+HCCL
+
+```bash
+============ Serving Benchmark Result ============
+Successful requests:                     100       
+Benchmark duration (s):                  29.30     
+Total input tokens:                      23260     
+Total generated tokens:                  22043     
+Request throughput (req/s):              3.41      
+Output token throughput (tok/s):         752.27    
+Total Token throughput (tok/s):          1546.07   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          45.49     
+Median TTFT (ms):                        43.90     
+P99 TTFT (ms):                           63.22     
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          12.62     
+Median TPOT (ms):                        12.35     
+P99 TPOT (ms):                           17.70     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           12.32     
+Median ITL (ms):                         11.15     
+P99 ITL (ms):                            44.55     
+==================================================
+```
+
+#### v0+GPU+PP2+DAG+HCCL+OVERLAP COMM
+
+```bash
+============ Serving Benchmark Result ============
+Successful requests:                     100       
+Benchmark duration (s):                  29.28     
+Total input tokens:                      23260     
+Total generated tokens:                  22033     
+Request throughput (req/s):              3.41      
+Output token throughput (tok/s):         752.38    
+Total Token throughput (tok/s):          1546.66   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          43.77     
+Median TTFT (ms):                        42.23     
+P99 TTFT (ms):                           66.21     
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          12.57     
+Median TPOT (ms):                        12.35     
+P99 TPOT (ms):                           17.14     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           12.33     
+Median ITL (ms):                         11.18     
+P99 ITL (ms):                            43.73     
+==================================================
+```
+
+
+
+I also conducted tests on the GPU, and the results are consistent with those on the NPU:
+
+| Test Scenarios                       | Throughput (tok/s) | Median TTFT (ms) | Median ITL (ms) |
+| ------------------------------------ | ------------------ | ---------------- | --------------- |
+| PP2 + Ray + CG disabled              | 1214.59            | 55.77            | 18.35           |
+| PP2 + Ray + CG + HCCL disabled       | 1550.95            | 43.48            | 10.52           |
+| PP2 + Ray + CG + HCCL                | 1546.07            | 43.90            | 11.15           |
+| PP2 + Ray + CG + HCCL + OVERLAP COMM | 1546.66            | 42.23            | 11.18           |
+
+**Test Summary:**
+**For PP scenarios, enabling CG + HCCL improves throughput by 27.2%, reduces first token latency by 21.3%, and decreases inter-token latency by 39.2% compared to disabling CG.**
+
+
+
+GPU延迟测试：
+
+脚本
+
+```bash
+python /home/lcg/github/vllm/benchmarks/benchmark_latency.py \
+  --model Qwen/Qwen2.5-0.5B-Instruct \
+  --tensor-parallel-size 2 \
+  --distributed-executor-backend ray \
+  --load-format dummy \
+  --num-iters-warmup 5 \
+  --num-iters 15 \
+  --dtype=half
+```
+
+结果（不开启CG）
+
+2.43
+
+```bash
+Avg latency: 1.0726978161682685 seconds
+10% percentile latency: 1.0299802169203758 seconds
+25% percentile latency: 1.0373446755111217 seconds
+50% percentile latency: 1.0550925992429256 seconds
+75% percentile latency: 1.097391914576292 seconds
+90% percentile latency: 1.1414518997073173 seconds
+99% percentile latency: 1.161827388331294 seconds
+```
+
+3.0
+
+```bash
+Avg latency: 1.042148329814275 seconds
+10% percentile latency: 1.0173448510468006 seconds
+25% percentile latency: 1.0202629612758756 seconds
+50% percentile latency: 1.03023174777627 seconds
+75% percentile latency: 1.0405169175937772 seconds
+90% percentile latency: 1.098411376029253 seconds
+99% percentile latency: 1.1247548013925552 seconds
+```
+
+```bash
+Avg latency: 0.868422407656908 seconds
+10% percentile latency: 0.8616460517048836 seconds
+25% percentile latency: 0.8652758887037635 seconds
+50% percentile latency: 0.8679988868534565 seconds
+75% percentile latency: 0.8712513111531734 seconds
+90% percentile latency: 0.8767501298338175 seconds
+99% percentile latency: 0.8792134084179998 seconds
+```
+
+```
+Avg latency: 0.8669588834047317 seconds
+10% percentile latency: 0.8517784826457501 seconds
+25% percentile latency: 0.8574468735605478 seconds
+50% percentile latency: 0.8651268817484379 seconds
+75% percentile latency: 0.8755113473162055 seconds
+90% percentile latency: 0.8820302747189999 seconds
+99% percentile latency: 0.8882908537983895 seconds
+```
+
+结果（开启CG）
+
+2.43
+
+```bash
+Avg latency: 0.9878563715765873 seconds
+10% percentile latency: 0.9704913411289453 seconds
+25% percentile latency: 0.9806051189079881 seconds
+50% percentile latency: 0.9882589504122734 seconds
+75% percentile latency: 0.9967789361253381 seconds
+90% percentile latency: 1.0026191860437392 seconds
+99% percentile latency: 1.0101348185539245 second
+```
+
+3.0
+
+```bash
+Avg latency: 0.8288120120763779 seconds
+10% percentile latency: 0.8216691926121712 seconds
+25% percentile latency: 0.8229629555717111 seconds
+50% percentile latency: 0.8303928840905428 seconds
+75% percentile latency: 0.8333907779306173 seconds
+90% percentile latency: 0.8373868580907583 seconds
+99% percentile latency: 0.8397082838788629 seconds
+```
+
+```bash
+Avg latency: 0.8325132463127375 seconds
+10% percentile latency: 0.8224320389330387 seconds
+25% percentile latency: 0.8280689939856529 seconds
+50% percentile latency: 0.8338026516139507 seconds
+75% percentile latency: 0.8376650977879763 seconds
+90% percentile latency: 0.8396484319120645 seconds
+99% percentile latency: 0.8447789378464222 seconds
+```
+
+```bash
+Avg latency: 0.8293809531877439 seconds
+10% percentile latency: 0.819695957750082 seconds
+25% percentile latency: 0.8257988197728992 seconds
+50% percentile latency: 0.8292185887694359 seconds
+75% percentile latency: 0.8324887929484248 seconds
+90% percentile latency: 0.8392023585736752 seconds
+99% percentile latency: 0.8449454347789288 seconds
+```
+
+```bash
+Avg latency: 0.8266034511228403 seconds
+10% percentile latency: 0.8109981153160334 seconds
+25% percentile latency: 0.8180960435420275 seconds
+50% percentile latency: 0.8275668807327747 seconds
+75% percentile latency: 0.8360117860138416 seconds
+90% percentile latency: 0.8391015358269215 seconds
+99% percentile latency: 0.8424256873875856 seconds
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# vLLM on Ray benchmark(Ascend NPU)
+
+## Test Environment
+
+**python: 3.10**
+
+**cann: 8.1.0**
+
+**vllm: Main branch (0.7.3) + custom modifications (to be submitted as a PR to the community)**
+
+**ascend: main branch(0.7.3)**
+
+**ray: [ray-project/ray#51032](https://github.com/ray-project/ray/pull/51032)**
+
+**torch-npu: [2.5.1 rc1](https://github.com/vllm-project/vllm-ascend/blob/main/pta_install.sh)**
+
+**pytorch: 2.5.1**
+
+## Test Plan
+
+The performance tests were conducted using vLLM's official Serving-Test script, [benchmark_serving.py](https://github.com/vllm-project/vllm/blob/main/benchmarks/benchmark_serving.py), under different scenarios, and the test results were recorded.
+
+**Models: Qwen-2.5.0-0.5B/Qwen-2.5.0-14B**
+
+**脚本：**
+
+```bash
+# Serve
+vllm serve Qwen/Qwen2.5-0.5B-Instruct \
+  --pipeline-parallel-size 2 \
+  --distributed-executor-backend ray \
+  --trust-remote-code \
+  --disable-log-stats \
+  --disable-log-requests
+
+# CLIENT
+python3 benchmarks/benchmark_serving.py --backend vllm \
+	--model Qwen/Qwen2.5-0.5B-Instruct \
+	--dataset-name sharegpt \
+	--dataset-path benchmarks/ShareGPT_V3_unfiltered_cleaned_split.json \
+	--num-prompts 100 \
+	--save-result \
+	--result-dir benchmarks/result/ \
+	--request-rate 4
+```
+
+This involves adjusting the parameters: `pipeline-parallel-size`, `model`, and `num-prompts`.
+
+**vLLM Environment Variables: **
+
+```bash
+export VLLM_USE_RAY_SPMD_WORKER='1'
+export VLLM_USE_RAY_COMPILED_DAG='1'
+export VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM='1'
+```
+
+
+
+## Test Results
+
+### **Qwen-2.5-0.5B**
+
+| Test Scenarios                       | Throughput (tok/s) | Median TTFT (ms) | Median ITL (ms) |
+| ------------------------------------ | ------------------ | ---------------- | --------------- |
+| TP2 + Ray + CG disabled              | 867.49             | 110.95           | 43.81           |
+| TP2 + Ray + CG                       | 858.43             | 67.93            | 45.46           |
+| PP2 + MP                             | 417.00             | 72.91            | 50.36           |
+| PP2 + Ray + CG disabled              | 780.89             | 79.29            | 46.91           |
+| PP2 + Ray + CG + HCCL disabled       | 974.42             | 63.46            | 35.85           |
+| PP2 + Ray + CG + HCCL                | 1006.72            | 60.40            | 34.81           |
+| PP2 + Ray + CG + HCCL + OVERLAP COMM | 966.54             | 61.96            | 36.58           |
+
+**Test Summary:**
+For TP scenarios, there is no difference between enabling and disabling the CG feature.
+**For PP scenarios, enabling CG + HCCL improves throughput by 29.1%, reduces first token latency by 23.8%, and decreases inter-token latency by 25.8% compared to disabling CG.**
+
+### **Qwen-2.5-14B**
+
+#### PP=2，num-prompts=100
+
+| Test Scenarios                       | Throughput (tok/s) | Median TTFT (ms) | Median ITL (ms) |
+| ------------------------------------ | ------------------ | ---------------- | --------------- |
+| PP2 + MP                             | 547.93             | 129.24           | 75.23           |
+| PP2 + Ray + CG disabled              | 581.58             | 140.40           | 78.35           |
+| PP2 + Ray + CG + HCCL disabled       | 680.36             | 121.03           | 63.91           |
+| PP2 + Ray + CG + HCCL                | 690.78             | 118.50           | 62.34           |
+| PP2 + Ray + CG + HCCL + OVERLAP COMM | 664.87             | 126.62           | 64.84           |
+
+**Test Summary:**
+**For PP scenarios, enabling CG + HCCL improves throughput by 18.8%, reduces first token latency by 15.6%, and decreases inter-token latency by 20.4% compared to disabling CG.**
+
+#### PP=4，num-prompts=500
+
+| Test Scenarios                       | Throughput (tok/s) | Median TTFT (ms) | Median ITL (ms) |
+| ------------------------------------ | ------------------ | ---------------- | --------------- |
+| PP4 + Ray + CG disabled              | /                  | /                | /               |
+| PP4 + Ray + CG + HCCL disabled       | 1237.83            | 134.52           | 71.74           |
+| PP4 + Ray + CG + HCCL                | 1220.42            | 134.16           | 75.75           |
+| PP4 + Ray + CG + HCCL + OVERLAP COMM | 1208.81            | 131.44           | 77.87           |
+

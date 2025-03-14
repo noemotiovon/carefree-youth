@@ -1,94 +1,35 @@
-### 1 知识导入
-
-#### 1. 1 c/c++文件执行过程
-
-**1. 编写代码（Source Code）**
-
-**工具**：文本编辑器（如vim、VS Code、Sublime Text等）。
-
-**操作**：编写C/C++源代码文件，通常扩展名为.c或.cpp。
-
-**2. 编译（Compilation）**
-
-**工具**：C/C++编译器（如gcc、g++、clang）。
-
-**命令**：在命令行中可以使用以下命令将源码编译成汇编代码（可选步骤，也可以直接生成目标文件）：
-
-```bash
-gcc -S source.c -o source.s   # C语言
-g++ -S source.cpp -o source.s # C++语言
-```
-
-**说明**：编译器将源码转换为汇编代码（可读的低级代码），包括语法检查、语义检查、优化等过程。
-
-**3. 汇编（Assembly）**
-
-**工具**：汇编器（如as）。
-
-**命令**：可以将汇编代码转换为二进制的目标文件（.o文件）：
-
-```bash
-gcc -c source.s -o source.o
-```
-
-（大多数情况下直接使用-c选项编译成目标文件，跳过生成汇编代码的步骤。）
-
-**说明**：汇编器将汇编代码转换为二进制的机器代码（目标文件），这是特定于硬件架构的文件。
-
-**4. 链接（Linking）**
-
-**工具**：链接器（通常由编译器自动调用，例如GCC中的ld）。
-
-**命令**：将多个目标文件链接成一个可执行文件：
-
-```bash
-gcc source.o -o executable   # C语言
-g++ source.o -o executable   # C++语言
-```
-
-**说明**：链接器将目标文件和库文件（如C标准库、动态库）整合到一起，生成最终的可执行文件。链接过程包括符号解析和地址分配。
-
-**5. 使用CMake进行构建（可选）**
-
-对于大型项目或多文件项目，通常使用构建系统来简化编译和链接过程。CMake是一个常见的构建工具，它会生成Makefile或其他平台的项目文件。
-
-**工具**：CMake
-
-**命令**：
-
-```bash
-# 生成构建文件
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-# 构建项目
-cmake --build build
-```
-
-**说明**：CMake会自动生成构建脚本，并调用相应的编译器和链接器，简化了项目的管理和构建过程。
-
-**6. 运行可执行文件**
-
-**工具**：操作系统
-
-**命令**：
-
-```bash
-./executable  # 在Linux/macOS
-executable.exe # 在Windows
-```
-
-**说明**：通过执行生成的文件来运行程序。
-
----
-
-### 2 llama.cpp 项目运行
-
-#### 2.1 下载llama.cpp
+# 下载
 
 ```bash
 git clone https://github.com/ggerganov/llama.cpp
 cd llama.cpp
 ```
+
+# 编译
+
+```bash
+mkdir build 
+cd build 
+cmake .. -DCMAKE_BUILD_TYPE=debug -DLLAMA_CANN=on && make -j32
+```
+
+# 精度测试
+
+```bash
+# 单算子精度测试
+./build/bin/test-backend-ops test -b CANN0 -o {OP_NAME}
+# e.g. 
+./build/bin/test-backend-ops test -b CANN0 -o CONT
+
+# 单算子性能测试，性能测试不会测试精度
+./build/bin/test-backend-ops perf -b CANN0 -o {OP_NAME}
+```
+
+
+
+
+
+
 
 #### 2.2 编译
 
@@ -238,86 +179,7 @@ cmake .. -DCMAKE_BUILD_TYPE=debug -DLLAMA_CANN=on && make -j32
 
 
 
-### 6 RoPE算子实现
 
-#### 6.1 王帅实现运行：
-![image-20241121145546271](/Users/lichenguang/Library/Application Support/typora-user-images/image-20241121145546271.png)
-
-
-
-#### 6.2 CPU执行步骤
-
-参数信息：
-
-**n_dims**：指定深度。
-
-**mode**：RoPE计算模型。模型0 -> aclnn模型1
-
-**n_ctx_orig**: 可能是原始上下文的长度。
-
-**freq_base**: 频率基数。
-
-**freq_scale**: 频率缩放因子。
-
-**ext_factor**: 外部调整因子。
-
-**attn_factor**: 注意力调整因子，也称为mscale。
-
-**beta_fast**:  快通道频率衰减因子。
-
-**beta_slow**: 慢通道频率衰减因子。
-
-**freq_factors**: 频率调整因子（数组）。
-
-**pos**: 存储位置信息数组。
-
----
-
-由参数进行运算得到：
-
-**theta_scale**: 角度缩放因子 theta_scale = powf(freq_base, -2.0f/n_dims)
-
-**corr_dims[2]**: 定义了一个**修正维度的范围**，表明旋转位置嵌入对哪些维度（或者特征分量）进行了调整。
-
----
-
-CPU运算步骤：
-
-1. i3遍历ne3（猜测是Batch信息）
-2. i2遍历ne2（Sequence）
-3. 取出位置信息pos[i2] = p，作为初始theat_base
-4. i0遍历ne0（维度信息），步长为2
-5. 计算频率缩放因子。ff = freq_factors[i0/2]
-6. 计算theat = theat_base / ff (也称为：theta_extrap插值或外推所需的角度基准值)
-7. theta_interp = theta_extrap * freq_scale 计算出的初始插值角度。
-8. theta = theta_interp
-9. 如果ext_factor == 0
-   1. cache[i0]=cos_theta = cos(theta) * mscale;
-   2. cache[i1]=sin_theta = sin(theta) * mscale;
-10. 如果ext_factor != 0（先不考虑）
-11. theta = theta * theta_scale;
-
----
-
-NPU运算步骤
-
-1. 构造acl_arange_tensor，维度[ne0 / 2, 1, 1, 1]，值[[[[1, 2, 3, ..., ne0/2]]]]
-2. 构造acl_theta_scale_tensor，维度[ne0 / 2, 1, 1, 1]，值[[[[theta_scale, theta_scale^2, ..., theta_scale^ne0/2]]]]
-3. 构造all_freq_factors_tensor，维度[ne0 / 2, 1, 1, 1]，值srr2->data
-4. 构造acl_position_tensor，维度[1, ne1, 1, 1]，值src1->data
-
-
-
-
-
-
-
-cann_rope_optimization
-
-
-
-1. dims
-2. 
 
 
 
