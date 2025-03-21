@@ -18,6 +18,7 @@ cmake .. -DCMAKE_BUILD_TYPE=debug -DLLAMA_CANN=on && make -j32
 ```bash
 # 单算子精度测试
 ./build/bin/test-backend-ops test -b CANN0 -o {OP_NAME}
+./bin/test-backend-ops test -b CANN0 -o {OP_NAME}
 # e.g. 
 ./build/bin/test-backend-ops test -b CANN0 -o CONT
 
@@ -76,7 +77,7 @@ python3 convert_hf_to_gguf.py   /home/lcg/.cache/modelscope/hub/Qwen/Qwen2-0___5
 
 If the fllowing info is output on screen, you are using `llama.cpp by CANN backend`:
 
-```
+```bash
 llm_load_tensors:       CANN0 buffer size = 13313.00 MiB
 llama_new_context_with_model:       CANN0 compute buffer size =  1260.81 MiB
 ```
