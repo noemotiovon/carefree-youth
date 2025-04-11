@@ -452,11 +452,7 @@ static void ggml_compute_forward_rope_f16(
 }
 ```
 
-
-
-
-
-### 4 测试用例
+## 4 测试用例
 
 各个含义：
 
@@ -568,4 +564,21 @@ static void ggml_compute_forward_rope_f16(
   ROPE(type=f16,ne_a=[128,32,2,1],n_dims=128,mode=0,n_ctx=512,fs=1.424500,ef=0.746500,af=1.424500,ff=1,v=0): [ROPE] NMSE = 0.010074106 > 0.000000100 FAIL
   ROPE(type=f16,ne_a=[64,128,2,1],n_dims=64,mode=2,n_ctx=512,fs=1.424500,ef=0.746500,af=1.424500,ff=1,v=0): [ROPE] NMSE = 0.065617311 > 0.000000100 FAIL
 ```
+
+## 5. NPU实现
+
+假设src0->ne为[ne00, ne01, ne02, ne03]，src1为[ne10, 1, 1, 1]
+
+1. 申请sin_buffer，cos_buffer，ne为[ne00, 1, ne02, 1]。**需要申请内存**
+2. 申请arange_buffer，ne为[ne00/2, 1, 1, 1]，其值为{0, 1, 2, 3, 4, ..., ne00/2 - 1}，用于辅助计算。(调用一次aclnn_arange)。**需要申请内存，需要一次算子调用**
+3. 申请theta_scale_buffer，ne为[ne00/2, 1, 1, 1]，其值为theta_scale ^ {arange_buffer}，（优化不需要申请多余的内存）。**需要申请内存，已优化**
+4. [theta] * freq_scale。（调用一次aclnn_muls）**需要一次算子调用**
+5. [theta] / [freq_factors]。（调用一次aclnn_div）**需要一次算子调用**
+6. position的ne为[1, ne10, 1, 1]。
+7. 申请theta_buffer为[ne00/2, ne10, 1, 1]。[theta] = [theta_scale] * [position]。 **需要申请内存，需要一次算子调用**
+8. 申请permute_buffer，ne为[ne00/2, 1, ne10, 1]。[permute] = theta求转置。 **需要申请内存，需要一次算子调用，已经优化**
+9. 申请new_sin_buffer，new_cos_buffer，ne为[ne00/2, 1, ne10, 1]。**需要申请内存**（为什么又申请？ne02==ne10？？）
+10. new_sin_buffer = sin([theta])，new_cos_buffer = cos([theta])。**两次算子调用**
+11. new_sin_buffer = attn_factor * [sin_buffer]，new_cos_buffer = attn_factor * [cos_buffer]。**两次算子调用**
+12. sin_buffer = repeat(new_sin_buffer)，cos_buffer = repeat(new_cos_buffer)。**两次算子调用**
 
