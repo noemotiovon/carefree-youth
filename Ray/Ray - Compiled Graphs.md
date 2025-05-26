@@ -30,6 +30,8 @@ compiled_graph = dag.experimental_compile()
 ray.get(compiled_graph.execute(1))
 ```
 
+Ray Compiled Graph 采用静态执行模型。它不同于传统的 Ray API，后者是即时执行的。
+
 这些改进为 Ray 程序带来了新机遇：
 
 - **Ray Compiled Graphs** 可以在不同的 Actor 间以毫秒级的延迟传输大规模张量。
