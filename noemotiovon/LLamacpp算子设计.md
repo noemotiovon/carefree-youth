@@ -503,3 +503,404 @@ static void ggml_compute_forward_rope_f32(
 }
 ```
 
+# RMS_Norm
+
+## 输入
+
+| 变量名称 | 类型      | 含义                                                       | 备注                                 |
+| -------- | --------- | ---------------------------------------------------------- | ------------------------------------ |
+| src      | aclTensor | 待归一化的特征张量                                         | shape = `[B, S, N, D]`，支持 F16/F32 |
+| eps      | float     | 为数值稳定性加入的 epsilon，为数学表达式中的 $\varepsilon$ | 一般为 1e-5 或 1e-6                  |
+| axis     | int       | 归一化的维度起始轴                                         | 通常为 `-1` 表示最后一个维度 D       |
+| dst      | aclTensor | 输出张量                                                   | shape = `src.shape`                  |
+
+> 通常 RMSNorm 应用于 `[B, S, N, D]` 中的最后一个维度 `D`，但为了适配性更强的 kernel，建议参数化归一化轴。
+
+## 计算流程
+
+### 1 获取输入向量
+
+对于每个输入向量 $x \in \mathbb{R}^D$，其中 $D$ 是最后一个维度，对该向量做 RMS 归一化：
+$$
+x = [x_1, x_2, \dots, x_D]
+$$
+
+### 2 计算均方根（Root Mean Square）
+
+不进行均值中心化，仅对平方和取均值后开根号：
+$$
+\text{rms}(x) = \sqrt{ \frac{1}{D} \sum_{i=1}^D x_i^2 + \varepsilon }
+$$
+其中：
+
+- $D$ 是归一化维度长度
+- $\varepsilon$ 是防止除以零的数值稳定项（如 1e-5）
+
+### 3 归一化
+
+对每个维度上的值进行缩放：
+$$
+\hat{x}_i = \frac{x_i}{\text{rms}(x)}
+$$
+
+## CPU源码
+
+```c++
+static void ggml_compute_forward_rms_norm_f32(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+
+    const ggml_tensor * src0 = dst->src[0];
+
+    GGML_ASSERT(ggml_are_same_shape(src0, dst));
+
+    GGML_ASSERT(src0->nb[0] == sizeof(float));
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    GGML_TENSOR_UNARY_OP_LOCALS
+
+    float eps;
+    memcpy(&eps, dst->op_params, sizeof(float));
+
+    GGML_ASSERT(eps >= 0.0f);
+
+    // TODO: optimize
+    for (int64_t i03 = 0; i03 < ne03; i03++) {
+        for (int64_t i02 = 0; i02 < ne02; i02++) {
+            for (int64_t i01 = ith; i01 < ne01; i01 += nth) {
+                const float * x = (float *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+
+                ggml_float sum = 0.0;
+                for (int64_t i00 = 0; i00 < ne00; i00++) {
+                    sum += (ggml_float)(x[i00] * x[i00]);
+                }
+
+                const float mean = sum/ne00;
+
+                float * y = (float *) ((char *) dst->data + i01*nb1 + i02*nb2 + i03*nb3);
+
+                memcpy(y, x, ne00 * sizeof(float));
+                // for (int i00 = 0; i00 < ne00; i00++) {
+                //     y[i00] = x[i00];
+                // }
+
+                const float scale = 1.0f/sqrtf(mean + eps);
+
+                ggml_vec_scale_f32(ne00, y, scale);
+            }
+        }
+    }
+}
+```
+
+# FLASH_ATTN_EXT
+
+## 输入
+
+| 变量名称 | 类型      | 含义                     | 备注                                      |
+| -------- | --------- | ------------------------ | ----------------------------------------- |
+| q        | aclTensor | 查询向量张量（Query）    | shape = `[B, N, S_q, D_k]`，支持 F16/F32  |
+| k        | aclTensor | 键向量张量（Key）        | shape = `[B, N, S_kv, D_k]`，支持 F16/F32 |
+| v        | aclTensor | 值向量张量（Value）      | shape = `[B, N, S_kv, D_v]`，支持 F16/F32 |
+| mask     | aclTensor | 注意力掩码（可选）       | shape = `[S_q, S_kv]`，支持 F16/F32       |
+| scale    | float     | 对 $QK^T$ 缩放的比例因子 | 通常为 $1/\sqrt{D_k}$                     |
+| max_bias | float     | 位置偏置的缩放系数       | 用于 ALiBi 等位置编码，若不使用则为 0     |
+| softcap  | float     | logit 的 softcap 限制    | 用于防止数值溢出，若不使用则为 0          |
+| dst      | aclTensor | 输出张量                 | shape = `[B, S_q, N, D_v]`，类型为 F32    |
+
+## 计算流程
+
+### 1. 基本定义
+
+Flash Attention 实现的是如下注意力计算（采用 softmax trick 和 online accumulate 的数值稳定方法）：
+$$
+\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{QK^T + M}{\text{scale}}\right) \cdot V
+$$
+其中：
+
+- $Q \in \mathbb{R}^{S_q \times D_k}$，$K \in \mathbb{R}^{S_k \times D_k}$，$V \in \mathbb{R}^{S_k \times D_v}$
+- $M$ 为 mask 或相对位置偏置
+- `scale` 为数值缩放项（例如 $1/\sqrt{D_k}$）
+
+### 2 中间变量准备
+
+`n_head` == N，表示多头注意力的头数。
+
+`n_head_log2`：是小于等于 `n_head` 的最大 **2 的幂**。例如，如果 `n_head = 12`，则 `n_head_log2 = 8`。
+
+定义两个缩放常数 `m0`, `m1`，分别用于对 **不同 head 编号**的 slope 做幂指数缩放，用于 **ALiBi（Attention with Linear Biases）** 的 bias slope 计算。
+$$
+m_0 = 2^{-\frac{\text{max\_bias}}{\text{n\_head\_log2}}}
+$$
+
+$$
+m_1 = 2^{-\frac{\text{max\_bias}/2}{\text{n\_head\_log2}}}
+$$
+
+### 3 遍历所有的batch，head
+
+#### slope 定义（用于 mask 的 bias）：
+
+对于第 `h` 个 head，bias slope 是：
+$$
+\text{slope}_h =
+\begin{cases}
+m_0^{h+1}, & \text{if } h < n\_head\_log2 \\
+m_1^{2(h - n\_head\_log2) + 1}, & \text{otherwise}
+\end{cases}
+$$
+
+#### Attention 核心循环：遍历所有 K/V
+
+$$
+s = \text{scale} \cdot (Q \cdot K_i) + \text{slope}_h \cdot \text{mask}[i]
+$$
+
+### 4 在线 Softmax 累加
+
+这是一个 **在线 softmax 加权求和**：
+$$
+V = \sum_i \exp(s_i - M) \cdot v_i, \quad S = \sum_i \exp(s_i - M)
+$$
+注意这里 `M` 是目前遇到的最大 logit（为了数值稳定性），`S` 是 softmax 的分母项。
+
+### 5 归一化得到最终输出
+
+最终：
+$$
+\text{output} = \frac{V}{S} = \frac{\sum_i \exp(s_i - M) \cdot v_i}{\sum_i \exp(s_i - M)}
+$$
+即：
+$$
+\text{output} = \sum_i \text{softmax}(s_i) \cdot v_i
+$$
+
+### 6 写入输出张量（含 permute）
+
+将计算结果从shape = `[B, N, S_q, D_v]` 转置为 shape = `[B, S_q, N, D_v]`
+
+## CPU源码
+
+```c++
+static void ggml_compute_forward_flash_attn_ext_f16(
+        const ggml_compute_params * params,
+        const ggml_tensor * q,
+        const ggml_tensor * k,
+        const ggml_tensor * v,
+        const ggml_tensor * mask,
+        ggml_tensor * dst) {
+
+    GGML_TENSOR_LOCALS(int64_t, neq, q,   ne)
+    GGML_TENSOR_LOCALS(size_t,  nbq, q,   nb)
+    GGML_TENSOR_LOCALS(int64_t, nek, k,   ne)
+    GGML_TENSOR_LOCALS(size_t,  nbk, k,   nb)
+    GGML_TENSOR_LOCALS(int64_t, nev, v,   ne)
+    GGML_TENSOR_LOCALS(size_t,  nbv, v,   nb)
+    GGML_TENSOR_LOCALS(int64_t, ne,  dst, ne)
+    GGML_TENSOR_LOCALS(size_t,  nb,  dst, nb)
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t DK = nek0;
+    const int64_t DV = nev0;
+    const int64_t N  = neq1;
+
+    GGML_ASSERT(ne0 == DV);
+    GGML_ASSERT(ne2 == N);
+
+    // input tensor rows must be contiguous
+    GGML_ASSERT(nbq0 == ggml_type_size(q->type));
+    GGML_ASSERT(nbk0 == ggml_type_size(k->type));
+    GGML_ASSERT(nbv0 == ggml_type_size(v->type));
+
+    GGML_ASSERT(neq0 == DK);
+    GGML_ASSERT(nek0 == DK);
+    GGML_ASSERT(nev0 == DV);
+
+    GGML_ASSERT(neq1 == N);
+
+    // dst cannot be transposed or permuted
+    GGML_ASSERT(nb0 == sizeof(float));
+    GGML_ASSERT(nb0 <= nb1);
+    GGML_ASSERT(nb1 <= nb2);
+    GGML_ASSERT(nb2 <= nb3);
+
+    // broadcast factors
+    const int64_t rk2 = neq2/nek2;
+    const int64_t rk3 = neq3/nek3;
+
+    const int64_t rv2 = neq2/nev2;
+    const int64_t rv3 = neq3/nev3;
+
+    // parallelize by q rows using ggml_vec_dot_f32
+
+    // total rows in q
+    const int nr = neq1*neq2*neq3;
+
+    // rows per thread
+    const int dr = (nr + nth - 1)/nth;
+
+    // row range for this thread
+    const int ir0 = dr*ith;
+    const int ir1 = MIN(ir0 + dr, nr);
+
+    float scale         = 1.0f;
+    float max_bias      = 0.0f;
+    float logit_softcap = 0.0f;
+
+    memcpy(&scale,         (float *) dst->op_params + 0, sizeof(float));
+    memcpy(&max_bias,      (float *) dst->op_params + 1, sizeof(float));
+    memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));
+
+    if (logit_softcap != 0) {
+        scale /= logit_softcap;
+    }
+
+    const uint32_t n_head      = neq2;
+    const uint32_t n_head_log2 = 1u << (uint32_t) floor(log2(n_head));
+
+    const float m0 = powf(2.0f, -(max_bias       ) / n_head_log2);
+    const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
+
+    ggml_type    const k_vec_dot_type      = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
+    ggml_from_float_t const q_to_vec_dot   = ggml_get_type_traits_cpu(k_vec_dot_type)->from_float;
+    ggml_vec_dot_t    const kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
+    ggml_to_float_t   const v_to_float     = ggml_get_type_traits(v->type)->to_float;
+
+    GGML_ASSERT((                            q_to_vec_dot) && "fattn: unsupported K-type");
+    GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float  ) && "fattn: unsupported V-type");
+
+    // loop over n_batch and n_head
+    for (int ir = ir0; ir < ir1; ++ir) {
+        // q indices
+        const int iq3 = ir/(neq2*neq1);
+        const int iq2 = (ir - iq3*neq2*neq1)/neq1;
+        const int iq1 = (ir - iq3*neq2*neq1 - iq2*neq1);
+
+        const uint32_t h = iq2; // head index
+        const float slope = (max_bias > 0.0f) ? h < n_head_log2 ? powf(m0, h + 1) : powf(m1, 2*(h - n_head_log2) + 1) : 1.0f;
+
+        float S = 0.0f;      // sum
+        float M = -INFINITY; // maximum KQ value
+
+        float       * VKQ32 = (float       *) params->wdata + ith*(1*DK + 2*DV + CACHE_LINE_SIZE_F32); // FP32 VKQ accumulator
+        float       * V32   =                 (VKQ32 + 1*DV); // (temporary) FP32 V buffer
+        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV); // (temporary) FP16 VKQ accumulator
+        ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV); // (temporary) buffer for Q converted to quantized/FP16
+
+        if (v->type == GGML_TYPE_F16) {
+            memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
+        } else {
+            memset(VKQ32, 0, DV*sizeof(float));
+        }
+
+        const ggml_fp16_t * mp = mask ? (ggml_fp16_t *)((char *) mask->data + iq1*mask->nb[1]) : NULL;
+
+        // k indices
+        const int ik3 = iq3 / rk3;
+        const int ik2 = iq2 / rk2;
+
+        // v indices
+        const int iv3 = iq3 / rv3;
+        const int iv2 = iq2 / rv2;
+
+        const float * pq = (const float *) ((char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3));
+        q_to_vec_dot(pq, Q_q, DK);
+
+        // online softmax / attention
+        // loop over n_kv and n_head_kv
+        // ref: https://arxiv.org/pdf/2112.05682.pdf
+        for (int64_t ic = 0; ic < nek1; ++ic) {
+            const float mv = mp ? slope*GGML_CPU_FP16_TO_FP32(mp[ic]) : 0.0f;
+            if (mv == -INFINITY) {
+                continue;
+            }
+
+            float s; // KQ value
+
+            const char * k_data = (const char *) k->data + ( ic*nbk1 + ik2*nbk2 + ik3*nbk3);
+            kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
+
+            s = s*scale; // scale KQ value
+
+            if (logit_softcap != 0.0f) {
+                s = logit_softcap*tanhf(s);
+            }
+
+            s += mv; // apply mask
+
+            const float Mold = M;
+
+            float ms = 1.0f; // upon new higher max val, scale VKQ and KQ sum with this value
+            float vs = 1.0f; // post-softmax KQ value, expf(s - M)
+
+            const char * v_data = ((const char *) v->data + (ic*nbv1 + iv2*nbv2 + iv3*nbv3));
+
+            if (v->type == GGML_TYPE_F16) {
+                if (s > M) {
+                    // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
+                    M = s;
+                    ms = expf(Mold - M);
+
+                    // V = V*expf(Mold - M)
+                    ggml_vec_scale_f16(DV, VKQ16, ms);
+                } else {
+                    // no new maximum, ms == 1.0f, vs != 1.0f
+                    vs = expf(s - M);
+                }
+
+                // V += v*expf(s - M)
+                ggml_vec_mad_f16(DV, VKQ16, (const ggml_fp16_t *) v_data, vs);
+            } else {
+                if (s > M) {
+                    // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
+                    M = s;
+                    ms = expf(Mold - M);
+
+                    // V = V*expf(Mold - M)
+                    ggml_vec_scale_f32(DV, VKQ32, ms);
+                } else {
+                    // no new maximum, ms == 1.0f, vs != 1.0f
+                    vs = expf(s - M);
+                }
+
+                // V += v*expf(s - M)
+                if (v_to_float) {
+                    v_to_float(v_data, V32, DV);
+                    ggml_vec_mad_f32(DV, VKQ32, V32, vs);
+                } else {
+                    // V is F32
+                    ggml_vec_mad_f32(DV, VKQ32, (const float *) v_data, vs);
+                }
+            }
+
+            S = S*ms + vs; // scale and increment sum with partial sum
+        }
+
+        if (v->type == GGML_TYPE_F16) {
+            for (int64_t d = 0; d < DV; ++d) {
+                VKQ32[d] = GGML_CPU_FP16_TO_FP32(VKQ16[d]);
+            }
+        }
+
+        // V /= S
+        const float S_inv = 1.0f/S;
+        ggml_vec_scale_f32(DV, VKQ32, S_inv);
+
+        // dst indices
+        const int i1 = iq1;
+        const int i2 = iq2;
+        const int i3 = iq3;
+
+        // original
+        //memcpy((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3), V, nev0*sizeof(float));
+
+        // permute(0, 2, 1, 3)
+        memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+    }
+}
+```
+
