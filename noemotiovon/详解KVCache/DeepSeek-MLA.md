@@ -1,4 +1,4 @@
-# 1 LLM 推理
+# LLM 推理
 
 LLM 推理分为两个阶段：Prefill，Decode。
 
@@ -317,21 +317,13 @@ $$
 \end{cases}
 $$
 
----
 
-### 总结流程图（文字描述）
 
-```
-Transformer 输出 → LayerNorm → 无偏置线性变换 → （可选温度缩放）→ softmax → 概率分布 → 采样或选择 → 下一个 token
-```
+# KV Cache
 
----
 
-### 输出维度回顾：
 
-| 阶段                               | 维度         |
-| ---------------------------------- | ------------ |
-| Transformer 输出 $X_{\text{last}}$ | $s \times d$ |
-| 归一化后 $\hat{X}$                 | $s \times d$ |
-| Logits $Z$                         | $s \times V$ |
-| 概率分布 $P$                       | $s \times V$ |
+
+
+
+

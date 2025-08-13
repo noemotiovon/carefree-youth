@@ -236,3 +236,21 @@ export GGML_CANN_ASYNC_MODE=1
 | GGML_OP_PAD_REFLECT_1D     | aclnnReflectionPad1d                                         | 循环调用       |
 | GGML_OP_COUNT_EQUAL        | aclnnInplaceEqTensor, aclnnUpsampleNearest2d                 |                |
 | GGML_OP_FLASH_ATTN_EXT     | aclnnCast, aclnnRepeat, aclnnArange, InplaceFillScalar, aclnnInplacePowTensorTensor, aclnnInplaceMul, aclnnFusedInferAttentionScoreV2, aclnnPermute | 复杂           |
+
+
+
+# CANN 昇腾支持
+
+| GGML_OP                 | aclnn算子                    | 待实现功能                               | 备注                     |
+| ----------------------- | ---------------------------- | ---------------------------------------- | ------------------------ |
+| GGML_OP_GET_ROWS        | aclnnIndexSelect             | 支持输入为F16，输出为F32，自动转类型     | 做到算子内侧依然依赖cast |
+| GGML_OP_DUP/GGML_OP_CPY |                              |                                          | 已经不能优化了           |
+| GGML_OP_ROPE            | aclnnRotaryPositionEmbedding | 支持输入为F16，sin/cos为F32的计算        | **重要提升**             |
+| GGML_OP_IM2COL          | aclnnPermute                 | 支持出入参类型不同，如F16->F32，F32->F16 | 做到算子内侧依然依赖cast |
+| GGML_OP_ARGSORT         | aclnnArgsort                 | 支持出参为F16/F32                        |                          |
+|                         |                              |                                          |                          |
+
+
+
+
+
