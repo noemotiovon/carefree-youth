@@ -252,5 +252,50 @@ export GGML_CANN_ASYNC_MODE=1
 
 
 
+```
+[ F16 权重 ]
+   model.tok_embd (F16) ───────────────▶ build_inp_embd
+                                           │
+                                           ▼
+                                     inpL (F32)
 
+                 ┌───────────────────────────────────────────────────────────┐
+                 │   循环每一层 il=0..n_layer-1                              │
+                 │                                                           │
+ inpL (F32) ───▶ build_norm (norm权重F32) ──▶ cur (F32)                       │
+                 │                                                           │
+                 │  Q路径: build_lora_mm(wq:F16) ─▶ (MatMul:F32)              │
+                 │           + bq(F32)  ────────▶ Qcur(F32)                  │
+                 │  K路径: build_lora_mm(wk:F16) ─▶ (MatMul:F32)              │
+                 │           + bk(F32)  ────────▶ Kcur(F32)                  │
+                 │  V路径: build_lora_mm(wv:F16) ─▶ (MatMul:F32)              │
+                 │           + bv(F32)  ────────▶ Vcur(F32)                  │
+                 │                                                           │
+                 │  Qcur(F32) ──▶ ggml_rope_ext(F32) ──▶ Qcur(F32)            │
+                 │  Kcur(F32) ──▶ ggml_rope_ext(F32) ──▶ Kcur(F32)            │
+                 │                                                           │
+                 │  Qcur/Kcur/Vcur(F32) ──▶ build_attn                        │
+                 │        (QKᵀ:F32 → softmax:F32 → QKᵀV:F32) → cur(F32)       │
+                 │                                                           │
+                 │  如果是最后一层且有inp_out_ids：                           │
+                 │    cur(F32) → ggml_get_rows → cur(F32)                     │
+                 │                                                           │
+                 │  ffn_inp(F32) = ggml_add(cur, inpSA)                       │
+                 │  build_norm(FFN norm权重F32) → cur(F32)                    │
+                 │  build_ffn:                                                │
+                 │    up_matmul(w_up:F16) → F32                               │
+                 │    gate_matmul(w_gate:F16) → F32                           │
+                 │    SiLU(F32)                                               │
+                 │    down_matmul(w_down:F16) → F32                           │
+                 │    add residual(F32) → cur(F32)                            │
+                 │  build_cvec(cur) → cur(F32)                                │
+                 │  inpL = cur(F32)                                           │
+                 └───────────────────────────────────────────────────────────┘
+
+ 最后一层输出:
+ inpL(F32) → build_norm(norm权重F32) → cur(F32)
+ cur(F32) → build_lora_mm(output:F16) → F32
+ if output_b(F32) → ggml_add → cur(F32)
+ cur(F32) = logits (result_output)
+```
 
