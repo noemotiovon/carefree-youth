@@ -63,9 +63,25 @@ Triton-shared 的 MLIR pass 是为“**外部后端 / 通用编译器生态**”
 
 在网上只搜到了 MAIA 支持了 Triton，通过的是 MAIA SDK，不过没有找到相关的代码，也没有相关的技术实现路径。
 
+## 大特性
 
-
-
-
-
+| 链接                                                | 特性                                                         | Merge时间 |
+| --------------------------------------------------- | ------------------------------------------------------------ | --------- |
+| https://github.com/microsoft/triton-shared/pull/325 | 将 Tptr Dialect 转换为 LLVM                                  | 已关闭    |
+| https://github.com/microsoft/triton-shared/pull/344 | 移除 Triton 子模块，并添加 triton-hash.txt 跟踪 Triton 提交  | 25/08/30  |
+| https://github.com/microsoft/triton-shared/pull/151 | 为 PtrAnalysis 添加嵌套循环支持                              | 已关闭    |
+| https://github.com/microsoft/triton-shared/pull/256 | 实现针对指针的 Triton 操作到 PtrDialect 的 lowering（降级转换） | 25/04/12  |
+| https://github.com/microsoft/triton-shared/pull/300 | 将 memref.load/store 替换为 affine.load/store（修改底层IR结构） | 25/07/17  |
+| https://github.com/microsoft/triton-shared/pull/290 | 在循环中处理结构化与非结构化访问的混合情况                   | 25/06/20  |
+| https://github.com/microsoft/triton-shared/pull/284 | 支持带取模（mod）的 gather/scatter 操作                      | 25/06/18  |
+| https://github.com/microsoft/triton-shared/pull/276 | 支持 `index_select` 风格的 gather/scatter 访问               | 25/05/16  |
+| https://github.com/microsoft/triton-shared/pull/266 | 支持仅有一个非连续维度的 Gather/Scatter 访问                 | 25/05/07  |
+| https://github.com/microsoft/triton-shared/pull/257 | 添加 pass，用于完成指针类型转换（ptr cast conversion）的最终阶段 | 25/04/12  |
+| https://github.com/microsoft/triton-shared/pull/254 | 添加选项，将 Triton tensor 指针操作降级（lower）为 Linalg    | 25/04/09  |
+| https://github.com/microsoft/triton-shared/pull/254 | 新增 TPtrDialect（Triton Pointer 方言）                      | 25/04/04  |
+| https://github.com/microsoft/triton-shared/pull/239 | 支持 仅一个非连续维度的 Gather/Scatter 访问                  | 25/04/03  |
+| https://github.com/microsoft/triton-shared/pull/109 | 引入 Arm SME/SVE2 优化 pass                                  | 已关闭    |
+| https://github.com/microsoft/triton-shared/pull/216 | 引入 unstructured-to-memref pass                             | 25/01/16  |
+| https://github.com/microsoft/triton-shared/pull/211 | 引入 triton-ptr-to-memref pass                               | 25/01/15  |
+| https://github.com/microsoft/triton-shared/pull/210 | 引入 triton-to-unstructured pass                             | 25/01/15  |
 
