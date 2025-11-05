@@ -134,5 +134,23 @@ Llama.cpp 的各个后端接入实际上是通过框架维护的一套 **API 和
 
 ![img](images/4_prefill_opti.png)
 
+# ROPE Cache
+
+1. arrange 为全局唯一，每次使用
+2. sin cos为每次推理唯一，每次在layer0加载，在后续使用
 
 
+
+# RNMS NORM 使用常量池
+
+搞个大的cache，里面存一全0和全1，避免每次都创建
+
+
+
+# FA 维度优化
+
+FA 里面qkv 不连续，有多余的aclnnContiguous，修改其维度，让其连续
+
+
+
+# Bcast通过nb来减少repeat
