@@ -10,7 +10,7 @@
 | **OpenRLHF**        | https://github.com/OpenRLHF/OpenRLHF          | 8.3k  | 2023/7/30  |                   |          | 快速增长 |
 | **Agent Lightning** | https://github.com/microsoft/agent-lightning  | 6.6k  | 2025/6/15  | 微软              |          | 快速增长 |
 | **Verl**            | https://github.com/volcengine/verl            | 15.1k | 2024/10/27 | 字节              | 生产部署 | 快速增长 |
-| TRL                 | https://github.com/huggingface/trl            | 16.1k | 2020/3/22  | Hugging Face      |          |          |
+| TRL                 | https://github.com/huggingface/trl            | 16.1k | 2020/3/22  | Hugging Face      | 算法研究 |          |
 | Prime RL            | https://github.com/PrimeIntellect-ai/prime-rl | 739   | 2024/9/8   | PrimeIntellect AI |          |          |
 | SkyRL               | https://github.com/NovaSky-AI/SkyRL           | 1.1k  | 2025/5/4   | UC Berkeley       |          |          |
 | RAGEN               | https://github.com/mll-lab-nu/RAGEN           | 2.4k  | 2025/1/19  |                   |          |          |
