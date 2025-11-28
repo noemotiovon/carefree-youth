@@ -205,3 +205,186 @@ Llama.cpp 的各个后端接入实际上是通过框架维护的一套 **API 和
 - 更重要的是，`SET_ROWS` 的输入地址始终固定（KV Cache 的起始地址），这样就避免了频繁重构图的问题。
 
 通过这一改造，Llama.cpp 在接入 ACL Graph 时成功绕过了 `CPY` 带来的性能瓶颈，大幅提升了推理效率。
+
+## Rope cache
+### RoPE Cache Init 公式推导
+
+在 `llama.cpp` 中，RoPE 的 cache 初始化逻辑可以写成如下数学公式：
+
+以下计算针对每个seq的token进行计算，其中`i`是head dim维度，不同的head的RoPE cache相同。RoPE输入的shape为 [B, S, N, D]。位置信息保存的值即为$${\theta}$$。
+
+1. 频率因子
+
+$$
+f_f =
+\begin{cases}
+\text{freq\_factors}[i_0/2], & \text{若 freq\_factors 存在} \\
+1.0, & \text{否则}
+\end{cases}
+$$
+
+2. 外推角度
+
+$$
+\theta_{\text{extrap}} = \dfrac{\theta}{f_f}
+$$
+
+ 3. 插值角度
+
+$$
+\theta_{\text{interp}} = f_s \cdot \theta_{\text{extrap}}
+$$
+
+4. 最终角度计算
+
+若 **$e = 0$（ext\_factor 不存在）**：
+
+$$
+\theta = \theta_{\text{interp}}
+$$
+
+
+
+若 **$e \neq 0$（ext\_factor 存在）**：
+
+ramp 函数：
+
+$$
+r(i_0) =
+\begin{cases}
+1, & \tfrac{i_0}{2} \leq low \\
+1 - \dfrac{\tfrac{i_0}{2} - low}{high - low}, & low < \tfrac{i_0}{2} < high \\
+0, & \tfrac{i_0}{2} \geq high
+\end{cases}
+$$
+
+其中 $(low, high) = (\text{corr\_dims}[0], \text{corr\_dims}[1])$。
+
+最终角度：
+
+$$
+\theta = (1-r(i_0)) \cdot \theta_{\text{interp}} + r(i_0) \cdot \theta_{\text{extrap}}
+$$
+
+5. 幅度缩放（仅当 $e \neq 0$ 时）
+
+$$
+m \gets m \cdot \left(1 + 0.1 \cdot \ln \frac{1}{f_s}\right)
+$$
+
+6. 写入 Cache
+
+$$
+\text{cache}[i_0] = m \cdot \cos(\theta)
+$$
+
+$$
+\text{cache}[i_0+1] = m \cdot \sin(\theta)
+$$
+
+7. 更新角度
+
+$$
+\theta \gets \theta \cdot \theta_{\text{scale}}
+$$
+
+
+
+### 使用aclnn算子实现
+
+#### ext factor为0时
+
+由于昇腾适合向量计算，所以，需要将上述计算方法等价变换成向量计算的过程。
+$$
+\theta \gets \theta \cdot \theta_{\text{scale}}
+$$
+首先处理这个角度更新的部分，由于$${\theta}$$是Position矩阵的对应每个seq token的值，这里针对每一个head dims，$${\theta}$$的值都需要乘以$$\theta_{\text{scale}}$$，那就等价于，对每个seq token的值
+
+
+$$
+\theta_{\text{scale}} = \left(\theta_{\text{scale}}\right)^{\text{head\_dim[i]}}
+$$
+所以第一步先计算每个head dim对应的$$\theta_{\text{scale}}$$的值，可以通过arrange生成 $${\{1,2,\dots,\text{head\_dim}\}}$$。
+$$
+\theta_{\text{scale}} = \left(\theta_{\text{scale}}\right)^{\{1,2,\dots,\text{head\_dim}\}}
+$$
+然后再计算外推角度和插值角度，这里先不计算与$${\theta}$$相乘，尽可能将不变的部分先计算
+$$
+\theta_{\text{extrap}} = \dfrac{\left(\theta_{\text{scale}}\right)^{\{1,2,\dots,\text{head\_dim}\}}}{f_f}
+$$
+
+$$
+\theta_{\text{interp}} = \dfrac{\left(\theta_{\text{scale}}\right)^{\{1,2,\dots,\text{head\_dim}\} \cdot f_s}}{f_f}
+$$
+
+上述计算，仅与head_dim和一些输入的常量有关，在常量不发生变化的情况下，**将$$\theta_{\text{interp}} $$ 的值进行缓存，减少后续的计算量**。
+
+如果ext_factor为0，计算与$${\theta}$$的乘积即可
+$$
+\theta \gets \theta \cdot \dfrac{\left(\theta_{\text{scale}}\right)^{\{1,2,\dots,\text{head\_dim}\} \cdot f_s  }}{f_f}
+$$
+
+
+最后，计算sin和cos的值
+$$
+\text{cache}[i_0] = m \cdot \cos(\theta)
+$$
+
+$$
+\text{cache}[i_0+1] = m \cdot \sin(\theta)
+$$
+
+可以看出，对于每个layer，cache的值也是不会变化的，所以**sin和cos的cache，在每个layer的常量不变的情况下，仅在layer[0]计算**，其他layer直接用缓存的值。
+
+
+
+#### ext factor不为0时
+
+
+ramp 函数：
+
+$$
+r(i_0) =
+\begin{cases}
+1, & \tfrac{i_0}{2} \leq low \\
+1 - \dfrac{\tfrac{i_0}{2} - low}{high - low}, & low < \tfrac{i_0}{2} < high \\
+0, & \tfrac{i_0}{2} \geq high
+\end{cases}
+$$
+
+展开混合公式：
+
+$$
+\theta = \theta_{\text{interp}} \cdot (1 - r) + \theta_{\text{extrap}} \cdot r
+= \theta_{\text{extrap}} \cdot \big(f_s - f_s \cdot r + r \big)
+$$
+
+为了向量化和常量缓存，可以将系数提取出来：
+
+$$
+\text{cache\_factor} = f_s - f_s \cdot r + r
+$$
+
+或考虑源码中 ramp 的取反：
+
+$$
+\text{cache\_factor} = f_s + (f_s - 1) \cdot r
+$$
+
+最终：
+
+$$
+\theta = \theta_{\text{extrap}} \cdot \text{cache\_factor}
+$$
+
+也就是：
+$$
+\theta \gets \theta \cdot  \dfrac{\left(\theta_{\text{scale}}\right)^{\{1,2,\dots,\text{head\_dim}\} \cdot \text{cache\_factor} }}{f_f}
+$$
+同时，缩放幅度也需要进行计算
+$$
+attn\_factor \gets attn\_factor \cdot \left(1 + 0.1 \cdot \ln \frac{1}{f_s}\right)
+$$
+其他计算步骤与ext factor不为0的场景相同。
+
+经过rope cache的缓存，对小参数量的推理速度有10%以上的提升。
