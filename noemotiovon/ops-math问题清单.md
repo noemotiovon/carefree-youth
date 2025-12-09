@@ -38,19 +38,21 @@
 | 5    | 算子验证         | 《AI Core 算子开发指南》，UT验证中，让参考tiling UT来实现，这个链接到了examples/add_example/tests/ut/op_host/test_add_example_tiling.cpp代码，这是让参考什么？也没说我该如何验证UT。 |      |
 | 6    | 自定义算子UT测试 | add_example同阶段一的8，9，10，11                            |      |
 | 7    | 自定义算子验证   | 执行报错：bash build.sh --run_example add_example eager cust --vendor_name=custom<br/>[2025-12-03 03:19:13] CMAKE_ARGS:  -DENABLE_ASAN=TRUE -DENABLE_UT_EXEC=TRUE<br/>[2025-12-03 03:19:13] ----------------------------------------------------------------<br/>[2025-12-03 03:19:13] Start to run examples,name:add_example mode:eager<br/>[2025-12-03 03:19:13] Start compile and run examples file: ../examples/add_example/examples/test_aclnn_add_example.cpp<br/>[2025-12-03 03:19:13] pkg_mode:cust vendor_name:custom<br/>[2025-12-03 03:19:21] aclnnAddExampleGetWorkspaceSize failed. ERROR: 161001 |      |
-| 8    | 编译             | 编译时间太久，改两行代码也要编译很久，效率低，影响积极性     |      |
+|      |                  |                                                              |      |
 | 9    | 编译             | 《算子调用方式》的编译与运行中，创建`CMakelist`文件是否应改为创建`CMakeLists.txt`文件，描述更准确 |      |
 | 10   | 编译             | 《算子调用方式》的编译与运行中，为什么这个CMakeLists.txt在add_example中没有？ |      |
-| 11   | 编译             | 跟着文档来，执行bash run.sh直接报错：`/home/lichenguang25/github/ops-math/examples/add_example/examples/test_aclnn_add_example.cpp:15:10: fatal error: aclnn_add_example.h: No such file or directory` |      |
-| 12   | 编译             | ModuleNotFoundError: No module named 'scipy'，ModuleNotFoundError: No module named 'sympy'，ModuleNotFoundError: No module named 'attr' |      |
-| 13   | 编译             | build/binary/ascend910b/bin/build_logs一直有各种各样的报错   |      |
-| 14   | 编译             | bash /home/lichenguang25/Ascend/latest/opp_legacy_kernel/bin/setenv.bash: line 78: prepend_env: command not found |      |
 |      |                  |                                                              |      |
 |      |                  |                                                              |      |
 |      |                  |                                                              |      |
 |      |                  |                                                              |      |
 |      |                  |                                                              |      |
 |      |                  |                                                              |      |
+|      |                  |                                                              |      |
+|      |                  |                                                              |      |
+|      |                  |                                                              |      |
+|      |                  |                                                              |      |
+
+
 
 # 阶段三：二次开发阶段，实现Floorv
 
@@ -76,25 +78,6 @@
 |      |                    |                                                              |      |
 |      |                    |                                                              |      |
 |      |                    |                                                              |      |
-
-# 
-
-bash build.sh --run_example floor eager cust --vendor_name=custom
-[2025-12-03 08:36:21] CMAKE_ARGS:  -DENABLE_ASAN=TRUE -DENABLE_UT_EXEC=TRUE
-[2025-12-03 08:36:21] ----------------------------------------------------------------
-[2025-12-03 08:36:21] Start to run examples,name:floor mode:eager
-[2025-12-03 08:36:22] Start compile and run examples file: ../math/floor/examples/test_aclnn_floor.cpp
-[2025-12-03 08:36:22] pkg_mode:cust vendor_name:custom
-[2025-12-03 08:36:28] floor input[0] is: 1.500000
-[2025-12-03 08:36:28] floor input[1] is: -1.500000
-[2025-12-03 08:36:28] floor input[2] is: -2.300000
-[2025-12-03 08:36:28] floor input[3] is: 2.700000
-[2025-12-03 08:36:28] floor input[4] is: 3.100000
-[2025-12-03 08:36:28] floor input[5] is: -3.900000
-[2025-12-03 08:36:28] floor input[6] is: 4.200000
-[2025-12-03 08:36:28] floor input[7] is: -4.800000
-[2025-12-03 08:36:28] -------------------- start run------------------------
-[2025-12-03 08:36:28] aclnnFloorGetWorkspaceSize failed. ERROR: 561103
 
 
 
