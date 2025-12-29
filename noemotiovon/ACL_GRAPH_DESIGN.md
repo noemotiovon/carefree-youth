@@ -194,16 +194,16 @@ flowchart TD
     E --> G
     F --> H[在 LRU Cache 中查找匹配的 graph]
     
-    H -->|找到匹配| I[移动到 cache 前端<br/>graph_capture_required = false]
-    H -->|未找到匹配| J[创建新的 ggml_cann_graph<br/>graph_capture_required = true]
+    H -->|找到匹配| I[移动到 cache 前端\ngraph_capture_required = false]
+    H -->|未找到匹配| J[创建新的 ggml_cann_graph\ngraph_capture_required = true]
     
     J --> K[将新 graph 加入 cache]
     I --> G
     K --> G
     
-    G --> L{use_cann_graph &&<br/>graph_capture_required?}
+    G --> L{use_cann_graph AND graph_capture_required?}
     L -->|是| M[aclmdlRICaptureBegin]
-    L -->|否| N{!use_cann_graph ||<br/>graph_capture_required?}
+    L -->|否| N{不使用 cann_graph OR graph_capture_required 为否?}
     M --> N
     
     N -->|是| O[逐算子执行循环]
@@ -214,7 +214,7 @@ flowchart TD
     R --> T{还有节点?}
     S --> T
     T -->|是| P
-    T -->|否| U{use_cann_graph?}
+    T -->|否| U{使用 cann_graph?}
     
     N -->|否| U
     U -->|是| V[从 cache 前端获取 graph]
@@ -224,6 +224,7 @@ flowchart TD
     X --> Y
     U -->|否| Z[返回成功]
     Y --> Z
+
 ```
 
 ### 5.2 Graph 匹配与缓存流程图
